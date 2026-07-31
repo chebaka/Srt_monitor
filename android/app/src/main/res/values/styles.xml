@@ -1,0 +1,6 @@
+<resources>
+    <style name="Theme.SrtMonitor" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:colorAccent">#2457D6</item>
+    </style>
+</resources>
