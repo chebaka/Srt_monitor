@@ -1,0 +1,21 @@
+# Gradle
+.gradle/
+**/build/
+local.properties
+
+# IDE
+.idea/
+*.iml
+
+# Secrets and runtime data
+.env
+private/
+*.card.env
+*.json
+*.log
+*.keystore
+*.jks
+
+# Python
+__pycache__/
+*.py[cod]
