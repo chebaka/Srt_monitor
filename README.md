@@ -32,7 +32,7 @@ android/app/build/outputs/apk/debug/app-debug.apk
 
 ## Important status
 
-The Android shell, encrypted multi-profile storage, foreground service, UI, and Python bridge are present. The verified desktop SRT engine still needs to be ported into `android/app/src/main/python/srt_engine.py` and tested on-device before this can be called a production APK. The checked-in Python module is an explicit non-monitoring placeholder; it does not claim to book or pay. Do not use automatic payment until that end-to-end Android test passes.
+The Android shell, encrypted multi-profile storage, foreground service, UI, and Python bridge are present. `android/app/src/main/python/srt_engine.py` contains the SRTrain monitoring, reservation, and optional payment path. The debug APK builds locally; live SRT login, reservation, and payment still need real-device verification before production use. Keep automatic payment off until that end-to-end test passes.
 
 ## Security
 

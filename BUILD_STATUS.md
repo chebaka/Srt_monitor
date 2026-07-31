@@ -10,13 +10,13 @@ Implemented shell:
 - notification permission request and foreground service
 - app notification/status callback path
 - Chaquopy Python integration point
-- GitHub Actions Android build workflow
+- Gradle wrapper for reproducible local Android builds
 
 Not yet production-ready:
 
-- The checked-in `srt_engine.py` is deliberately a placeholder and does not make network calls, reserve, or pay.
-- The verified desktop Python engine must be ported and tested inside Chaquopy on a real Android device.
-- APK must not be advertised as functional until GitHub Actions build and on-device tests pass.
+- The checked-in `srt_engine.py` is integrated with Chaquopy and contains monitoring, reservation, and optional payment logic.
+- Live SRT login, reservation, and payment still need testing inside Chaquopy on a real Android device.
+- APK must not be advertised as production-ready until on-device tests pass.
 
 Build command on a computer:
 

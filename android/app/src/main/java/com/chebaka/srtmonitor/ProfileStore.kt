@@ -52,10 +52,11 @@ class ProfileStore(context: Context) {
     fun save(profileName: String, config: MonitorConfig) {
         val profiles = readProfiles()
         profiles.put(profileName, JSONObject(config.toJson()))
-        prefs.edit()
+        val saved = prefs.edit()
             .putString(profilesKey, encrypt(profiles.toString()))
             .putString(activeKey, profileName)
-            .apply()
+            .commit()
+        check(saved) { "프로필 저장 실패" }
     }
 
     fun load(profileName: String): MonitorConfig? {

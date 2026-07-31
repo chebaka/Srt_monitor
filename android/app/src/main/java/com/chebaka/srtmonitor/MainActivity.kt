@@ -15,6 +15,7 @@ import android.os.Build
 import android.os.Bundle
 import android.text.InputType
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
@@ -54,6 +55,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         store = ProfileStore(this)
         createChannel()
         requestNotificationPermission()
@@ -116,9 +118,61 @@ class MainActivity : ComponentActivity() {
         cardNumber.setText(c.cardNumber); cardPassword.setText(c.cardPassword); cardExpire.setText(c.cardExpire); cardValidation.setText(c.cardValidation)
     }
 
-    private fun config() = MonitorConfig(srtId.text.toString().trim(), srtPassword.text.toString(), dep.text.toString().trim(), arr.text.toString().trim(), date.text.toString(), timeFrom.text.toString(), timeTo.text.toString(), passengers.text.toString().toIntOrNull() ?: 1, special.isChecked, windowSeat.isChecked, 30, 60, autoPay.isChecked, cardNumber.text.toString(), cardPassword.text.toString(), cardExpire.text.toString(), cardValidation.text.toString())
-    private fun saveProfile() { store.save(profileName.text.toString().trim().ifEmpty { "기본" }, config()); status.text = "✅ 프로필을 암호화해 저장했어" }
-    private fun startMonitor() { store.save(profileName.text.toString().trim().ifEmpty { "기본" }, config()); ContextCompat.startForegroundService(this, Intent(this, MonitorService::class.java)); status.text = "🔐 로그인 준비 중" }
+    private fun config(): MonitorConfig {
+        val name = profileName.text.toString().trim().ifEmpty { "기본" }
+        val id = srtId.text.toString().trim()
+        val password = srtPassword.text.toString()
+        val departure = dep.text.toString().trim()
+        val arrival = arr.text.toString().trim()
+        val dateValue = date.text.toString()
+        val fromValue = timeFrom.text.toString()
+        val toValue = timeTo.text.toString()
+        val passengerCount = passengers.text.toString().toIntOrNull()
+        val normalizedCard = cardNumber.text.toString().filter { it.isDigit() }
+
+        require(name.length <= 40) { "프로필 이름은 40자 이내로 입력해" }
+        require(id.isNotEmpty() && password.isNotEmpty()) { "SRT 아이디와 비밀번호를 입력해" }
+        require(departure.isNotEmpty() && arrival.isNotEmpty() && departure != arrival) { "출발역과 도착역을 확인해" }
+        require(dateValue.matches(Regex("[0-9]{8}"))) { "탑승 날짜를 YYYYMMDD로 선택해" }
+        require(fromValue.matches(Regex("[0-9]{6}")) && toValue.matches(Regex("[0-9]{6}"))) { "조회 시간을 HHMMSS로 선택해" }
+        require(fromValue <= toValue) { "종료 시각은 시작 시각 이후여야 해" }
+        require(passengerCount != null && passengerCount > 0) { "성인 인원은 1명 이상 입력해" }
+        if (autoPay.isChecked) {
+            require(normalizedCard.length in 12..19) { "카드번호를 확인해" }
+            require(cardPassword.text.toString().matches(Regex("[0-9]{2}"))) { "카드 비밀번호 앞 2자리를 입력해" }
+            require(cardExpire.text.toString().matches(Regex("[0-9]{4}"))) { "카드 유효기간을 YYMM으로 입력해" }
+            require(cardValidation.text.toString().matches(Regex("[0-9]{6}|[0-9]{10}"))) { "카드 인증번호를 확인해" }
+        }
+
+        return MonitorConfig(
+            id, password, departure, arrival, dateValue, fromValue, toValue,
+            passengerCount, special.isChecked, windowSeat.isChecked, 30, 60,
+            autoPay.isChecked, normalizedCard, cardPassword.text.toString(),
+            cardExpire.text.toString(), cardValidation.text.toString()
+        )
+    }
+
+    private fun validatedConfig(): MonitorConfig? = try {
+        config()
+    } catch (error: IllegalArgumentException) {
+        val message = error.message ?: "입력값을 확인해"
+        status.text = "⚠️ $message"
+        AlertDialog.Builder(this).setTitle("입력 확인").setMessage(message).setPositiveButton("확인", null).show()
+        null
+    }
+
+    private fun saveProfile() {
+        val config = validatedConfig() ?: return
+        store.save(profileName.text.toString().trim().ifEmpty { "기본" }, config)
+        status.text = "✅ 프로필을 암호화해 저장했어"
+    }
+
+    private fun startMonitor() {
+        val config = validatedConfig() ?: return
+        store.save(profileName.text.toString().trim().ifEmpty { "기본" }, config)
+        ContextCompat.startForegroundService(this, Intent(this, MonitorService::class.java))
+        status.text = "🔐 로그인 준비 중"
+    }
 
     private fun pickDate() { val c = Calendar.getInstance(); DatePickerDialog(this, { _, y, m, d -> date.setText("%04d%02d%02d".format(y, m + 1, d)) }, c.get(Calendar.YEAR), c.get(Calendar.MONTH), c.get(Calendar.DAY_OF_MONTH)).show() }
     private fun pickTime(target: EditText) { val c = Calendar.getInstance(); TimePickerDialog(this, { _, h, m -> target.setText("%02d%02d00".format(h, m)) }, c.get(Calendar.HOUR_OF_DAY), c.get(Calendar.MINUTE), true).show() }

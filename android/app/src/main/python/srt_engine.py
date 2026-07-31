@@ -5,6 +5,7 @@ Nothing is written to disk by this module and Telegram is intentionally absent.
 """
 import json
 import random
+import re
 import threading
 import time
 from datetime import datetime
@@ -107,16 +108,65 @@ def _wait(seconds):
     return _stop.wait(seconds)
 
 
-def run_monitor_json(config_json, callback):
-    """Monitor, reserve, and optionally pay once, then return."""
-    config = json.loads(config_json)
+def _safe_error(error, config):
+    message = str(error)
+    for key in ("srtPassword", "cardNumber", "cardPassword", "cardExpire", "cardValidation"):
+        secret = str(config.get(key, "")).strip()
+        if secret:
+            message = message.replace(secret, "[redacted]")
+    return message[:180]
+
+
+def _validate_config(config):
     required = ("srtId", "srtPassword", "dep", "arr", "date", "timeFrom", "timeTo")
     if any(not str(config.get(key, "")).strip() for key in required):
         raise ValueError("필수 SRT 조건이 비어 있어")
+
+    config["date"] = str(config["date"]).strip()
+    config["timeFrom"] = str(config["timeFrom"]).strip()
+    config["timeTo"] = str(config["timeTo"]).strip()
+    try:
+        datetime.strptime(config["date"], "%Y%m%d")
+        datetime.strptime(config["timeFrom"], "%H%M%S")
+        datetime.strptime(config["timeTo"], "%H%M%S")
+    except ValueError as error:
+        raise ValueError("날짜 또는 시간 형식이 잘못됐어") from error
+    if config["timeFrom"] > config["timeTo"]:
+        raise ValueError("종료 시각은 시작 시각 이후여야 해")
+
+    try:
+        passengers = int(config.get("passengers", 0))
+    except (TypeError, ValueError) as error:
+        raise ValueError("성인 인원이 잘못됐어") from error
+    if passengers < 1:
+        raise ValueError("성인 인원은 1명 이상이어야 해")
+    config["passengers"] = passengers
+
     if config.get("autoPay"):
-        card_fields = ("cardNumber", "cardPassword", "cardExpire", "cardValidation")
-        if any(not str(config.get(key, "")).strip() for key in card_fields):
-            raise ValueError("자동결제 카드정보가 비어 있어")
+        card_number = re.sub(r"[\s-]", "", str(config.get("cardNumber", "")))
+        card_password = str(config.get("cardPassword", "")).strip()
+        card_expire = str(config.get("cardExpire", "")).strip()
+        card_validation = str(config.get("cardValidation", "")).strip()
+        if not re.fullmatch(r"[0-9]{12,19}", card_number):
+            raise ValueError("카드번호를 확인해")
+        if not re.fullmatch(r"[0-9]{2}", card_password):
+            raise ValueError("카드 비밀번호 앞 2자리를 확인해")
+        if not re.fullmatch(r"[0-9]{4}", card_expire):
+            raise ValueError("카드 유효기간을 확인해")
+        if not re.fullmatch(r"[0-9]{6}|[0-9]{10}", card_validation):
+            raise ValueError("카드 인증번호를 확인해")
+        config["cardNumber"] = card_number
+        config["cardPassword"] = card_password
+        config["cardExpire"] = card_expire
+        config["cardValidation"] = card_validation
+
+
+def run_monitor_json(config_json, callback):
+    """Monitor, reserve, and optionally pay once, then return."""
+    config = json.loads(config_json)
+    if not isinstance(config, dict):
+        raise ValueError("설정 형식이 잘못됐어")
+    _validate_config(config)
 
     _stop.clear()
     consecutive_errors = 0
@@ -146,27 +196,33 @@ def run_monitor_json(config_json, callback):
 
             _emit(callback, f"🎫 좌석 발견: {candidate.train_number} {candidate.dep_time} · 예약 시도")
             reservation = _reserve(client, candidate, config)
-            message = f"✅ 예약 성공: {candidate.train_number} {candidate.dep_time}"
-            _emit(callback, message)
 
             if config.get("autoPay"):
+                _emit(callback, f"🎫 예약 확보: {candidate.train_number} {candidate.dep_time} · 결제 전환 중")
                 _emit(callback, "💳 결제 시도 중")
-                _pay(client, reservation, config)
-                paid = False
-                for item in client.get_reservations():
-                    if item.reservation_number == reservation.reservation_number:
-                        paid = bool(item.paid)
-                        break
-                if not paid:
-                    raise RuntimeError("결제 응답 후 예약내역에서 결제 완료를 확인하지 못했어")
+                try:
+                    _pay(client, reservation, config)
+                    paid = False
+                    for item in client.get_reservations():
+                        if item.reservation_number == reservation.reservation_number:
+                            paid = bool(item.paid)
+                            break
+                    if not paid:
+                        raise RuntimeError("예약내역에서 결제 완료를 확인하지 못했어")
+                except Exception as error:
+                    _emit(callback, f"🔴 예약 완료·결제 검증 실패: {_safe_error(error, config)}")
+                    return
                 _emit(callback, f"✅ 예약·결제 완료: {candidate.train_number} {candidate.dep_time}")
+            else:
+                _emit(callback, f"✅ 예약 성공: {candidate.train_number} {candidate.dep_time}")
             return
         except Exception as error:
             consecutive_errors += 1
             client = None
+            detail = _safe_error(error, config)
             if consecutive_errors >= 5:
-                _emit(callback, f"🔴 연속 오류 5회로 중지: {str(error)[:180]}")
+                _emit(callback, f"🔴 연속 오류 5회로 중지: {detail}")
                 return
-            _emit(callback, f"⚠️ 처리 오류 · 재시도 {consecutive_errors}/5: {str(error)[:180]}")
+            _emit(callback, f"⚠️ 처리 오류 · 재시도 {consecutive_errors}/5: {detail}")
             if _wait(random.uniform(poll_min, poll_max)):
                 return
