@@ -6,7 +6,8 @@ Implemented shell:
 
 - applicationId `com.chebaka.srtmonitor`
 - profile-name based encrypted multi-profile storage using Android Keystore AES-GCM
-- SRT account, route, date/time, passenger, seat, and payment fields
+- SRT/KORAIL account, route, date/time, passenger, seat, and payment fields
+- KTX, ITX-새마을, ITX-청춘, 새마을, 무궁화 selection
 - notification permission request and foreground service
 - app notification/status callback path
 - Chaquopy Python integration point
@@ -14,8 +15,9 @@ Implemented shell:
 
 Not yet production-ready:
 
-- The checked-in `srt_engine.py` is integrated with Chaquopy and contains monitoring, reservation, and optional payment logic.
-- Live SRT login, reservation, and payment still need testing inside Chaquopy on a real Android device.
+- The checked-in `srt_engine.py` is integrated with Chaquopy for SRT monitoring, reservation, and optional payment.
+- The checked-in `korail_engine.py` is integrated with Chaquopy for KORAIL monitoring and reservation; KORAIL automatic payment is blocked.
+- Live SRT/KORAIL login and reservation still need testing inside Chaquopy on a real Android device.
 - APK must not be advertised as production-ready until on-device tests pass.
 
 Build command on a computer:

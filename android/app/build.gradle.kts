@@ -42,6 +42,7 @@ chaquopy {
         version = "3.12"
         pip {
             install("SRTrain==2.6.7")
+            install("https://files.pythonhosted.org/packages/44/2c/4251f3b0c0284a82d3939c76ca060a515825deff0d79d487a191dc4fc017/korail2-0.4.0.tar.gz")
         }
     }
 }

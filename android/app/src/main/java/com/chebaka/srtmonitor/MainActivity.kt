@@ -68,6 +68,11 @@ class MainActivity : ComponentActivity() {
     private lateinit var routeFromLabel: TextView
     private lateinit var routeToLabel: TextView
     private lateinit var routeMeta: TextView
+    private lateinit var railway: MaterialAutoCompleteTextView
+    private lateinit var trainType: MaterialAutoCompleteTextView
+
+    private val railwayOptions = listOf("SRT", "KORAIL")
+    private val trainTypeOptions = listOf("SRT", "KTX", "ITX-새마을", "ITX-청춘", "새마을", "무궁화")
 
     private val stationNames = listOf(
         "수서", "동탄", "평택지제", "곡성", "공주", "광주송정", "구례구", "김천(구미)",
@@ -237,6 +242,55 @@ class MainActivity : ComponentActivity() {
         return wrapper to input
     }
 
+    private fun choiceField(label: String, options: List<String>): Pair<TextInputLayout, MaterialAutoCompleteTextView> {
+        val input = MaterialAutoCompleteTextView(this).apply {
+            textSize = 16f
+            inputType = InputType.TYPE_CLASS_TEXT
+            isFocusable = false
+            isClickable = true
+            isCursorVisible = false
+            setTextColor(color(R.color.srt_on_surface))
+            setAdapter(ArrayAdapter(this@MainActivity, android.R.layout.simple_dropdown_item_1line, options.toMutableList()))
+            setOnClickListener { showDropDown() }
+            setOnItemClickListener { _, _, _, _ -> dismissDropDown() }
+        }
+        val wrapper = TextInputLayout(this).apply {
+            hint = label
+            boxBackgroundMode = TextInputLayout.BOX_BACKGROUND_OUTLINE
+            endIconMode = TextInputLayout.END_ICON_DROPDOWN_MENU
+            setBoxCornerRadii(dp(10).toFloat(), dp(10).toFloat(), dp(10).toFloat(), dp(10).toFloat())
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) }
+            setEndIconOnClickListener { input.showDropDown() }
+            addView(input)
+        }
+        return wrapper to input
+    }
+
+    private fun trainTypeKey(label: String): String = when (label) {
+        "ITX-새마을" -> "ITX_SAEMAEUL"
+        "ITX-청춘" -> "ITX_CHEONGCHUN"
+        else -> label
+    }
+
+    private fun trainTypeLabel(key: String): String = when (key) {
+        "ITX_SAEMAEUL" -> "ITX-새마을"
+        "ITX_CHEONGCHUN" -> "ITX-청춘"
+        else -> key
+    }
+
+    private fun updateRailwayCapabilities() {
+        val isKorail = ::railway.isInitialized && railway.text.toString() == "KORAIL"
+        if (::windowSeat.isInitialized) {
+            windowSeat.isEnabled = !isKorail
+            if (isKorail) windowSeat.isChecked = false
+        }
+        if (::autoPay.isInitialized) {
+            autoPay.isEnabled = !isKorail
+            if (isKorail) autoPay.isChecked = false
+            updatePaymentVisibility()
+        }
+    }
+
     private fun sectionCard(title: String, caption: String, content: LinearLayout.() -> Unit): MaterialCardView {
         val card = MaterialCardView(this).apply {
             layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(14) }
@@ -363,7 +417,7 @@ class MainActivity : ComponentActivity() {
             setPadding(dp(2), dp(8), dp(2), dp(8))
         }
         header.addView(TextView(this).apply {
-            text = "SRT"
+            text = "RAIL"
             textSize = 18f
             gravity = Gravity.CENTER
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
@@ -376,12 +430,25 @@ class MainActivity : ComponentActivity() {
             setPadding(dp(14), 0, 0, 0)
         }
         headerCopy.addView(text("Watch", 24f, R.color.srt_navy, true))
-        headerCopy.addView(text("SRT 좌석 알림 도우미", 13f, R.color.srt_secondary).apply {
+        headerCopy.addView(text("SRT·KTX 좌석 알림 도우미", 13f, R.color.srt_secondary).apply {
             setPadding(0, dp(3), 0, 0)
         })
         header.addView(headerCopy)
         content.addView(header)
         content.addView(routePreview())
+
+        content.addView(sectionCard("철도 선택", "SRT 또는 KORAIL 열차를 선택해") {
+            val railwayField = choiceField("철도 운영사", railwayOptions)
+            railway = railwayField.second
+            railway.setText("SRT", false)
+            railway.setOnItemClickListener { _, _, _, _ -> updateRailwayCapabilities() }
+            addView(railwayField.first)
+
+            val trainField = choiceField("열차 종류", trainTypeOptions)
+            trainType = trainField.second
+            trainType.setText("SRT", false)
+            addView(trainField.first)
+        })
 
         val savedProfiles = store.listProfiles()
         val profileCaption = if (savedProfiles.isEmpty()) {
@@ -395,16 +462,16 @@ class MainActivity : ComponentActivity() {
             addView(profile.first)
         })
 
-        content.addView(sectionCard("SRT 계정", "계정 정보는 기기 안에서 암호화해 저장") {
-            val id = field("SRT 아이디")
+        content.addView(sectionCard("철도 계정", "계정 정보는 기기 안에서 암호화해 저장") {
+            val id = field("회원번호·이메일·전화번호")
             srtId = id.second
             addView(id.first)
-            val password = field("SRT 비밀번호", password = true)
+            val password = field("비밀번호", password = true)
             srtPassword = password.second
             addView(password.first)
         })
 
-        content.addView(sectionCard("여행 조건", "SRT 역 이름을 정확히 입력해") {
+        content.addView(sectionCard("여행 조건", "역 이름을 정확히 입력해") {
             val departure = stationField("출발역")
             dep = departure.second
             bindRoutePreview(dep)
@@ -459,7 +526,7 @@ class MainActivity : ComponentActivity() {
                 setOnCheckedChangeListener { _, _ -> updatePaymentVisibility() }
             }
             addView(autoPay)
-            addView(text("자동결제는 실제 카드 승인을 발생시켜. 처음에는 꺼두는 것을 권장해.", 12f, R.color.srt_secondary).apply {
+            addView(text("SRT에서만 지원. KORAIL 자동결제는 검증 전 차단돼.", 12f, R.color.srt_secondary).apply {
                 setPadding(0, dp(3), 0, 0)
             })
 
@@ -519,6 +586,7 @@ class MainActivity : ComponentActivity() {
         content.addView(stop)
 
         renderStatus("대기 중")
+        updateRailwayCapabilities()
         setContentView(ScrollView(this).apply {
             isFillViewport = true
             setBackgroundColor(color(R.color.srt_background))
@@ -564,8 +632,8 @@ class MainActivity : ComponentActivity() {
         status.text = message
         val surface = when {
             message.contains("실패") || message.contains("오류") || message.contains("입력 확인") -> R.color.srt_error_surface
-            message.contains("다음 조회 대기") || message.contains("확인해") -> R.color.srt_warning_surface
-            message.contains("완료") || message.contains("성공") -> R.color.srt_success_surface
+            message.contains("다음 조회 대기") || message.contains("확인해") || message.contains("결제 필요") -> R.color.srt_warning_surface
+            message.contains("완료") || message.contains("성공") || message.contains("예약 발견") -> R.color.srt_success_surface
             else -> R.color.srt_surface_soft
         }
         statusCard.setCardBackgroundColor(color(surface))
@@ -579,10 +647,13 @@ class MainActivity : ComponentActivity() {
         val c = store.load(name) ?: return
         store.setActiveProfile(name)
         profileName.setText(name)
+        railway.setText(c.operator, false)
+        trainType.setText(trainTypeLabel(c.trainType), false)
         srtId.setText(c.srtId); srtPassword.setText(c.srtPassword); dep.setText(c.dep); arr.setText(c.arr)
         date.setText(c.date); timeFrom.setText(c.timeFrom); timeTo.setText(c.timeTo); passengers.setText(c.passengers.toString())
         special.isChecked = c.special; windowSeat.isChecked = c.windowSeat; autoPay.isChecked = c.autoPay
         cardNumber.setText(c.cardNumber); cardPassword.setText(c.cardPassword); cardExpire.setText(c.cardExpire); cardValidation.setText(c.cardValidation)
+        updateRailwayCapabilities()
         updatePaymentVisibility()
         updateRoutePreview()
     }
@@ -596,17 +667,24 @@ class MainActivity : ComponentActivity() {
         val dateValue = date.text.toString()
         val fromValue = timeFrom.text.toString()
         val toValue = timeTo.text.toString()
+        val operatorValue = railway.text.toString().trim()
+        val trainTypeValue = trainTypeKey(trainType.text.toString().trim())
         val passengerCount = passengers.text.toString().toIntOrNull()
         val normalizedCard = cardNumber.text.toString().filter { it.isDigit() }
 
         require(name.length <= 40) { "프로필 이름은 40자 이내로 입력해" }
-        require(id.isNotEmpty() && password.isNotEmpty()) { "SRT 아이디와 비밀번호를 입력해" }
+        require(operatorValue in railwayOptions) { "철도 운영사를 선택해" }
+        require(trainTypeValue in setOf("SRT", "KTX", "ITX_SAEMAEUL", "ITX_CHEONGCHUN", "SAEMAEUL", "MUGUNGHWA")) { "열차 종류를 선택해" }
+        require((operatorValue == "SRT") == (trainTypeValue == "SRT")) { "SRT는 SRT, KORAIL은 KTX 계열을 선택해" }
+        require(id.isNotEmpty() && password.isNotEmpty()) { "철도 계정과 비밀번호를 입력해" }
         require(departure.isNotEmpty() && arrival.isNotEmpty() && departure != arrival) { "출발역과 도착역을 확인해" }
         require(dateValue.matches(Regex("[0-9]{8}"))) { "탑승 날짜를 선택해" }
         require(fromValue.matches(Regex("[0-9]{6}")) && toValue.matches(Regex("[0-9]{6}"))) { "조회 시간을 선택해" }
         require(fromValue <= toValue) { "종료 시각은 시작 시각 이후여야 해" }
         require(passengerCount != null && passengerCount > 0) { "성인 인원은 1명 이상 입력해" }
+        require(!windowSeat.isChecked || operatorValue == "SRT") { "KORAIL 창가 우선은 아직 지원하지 않아" }
         if (autoPay.isChecked) {
+            require(operatorValue == "SRT") { "KORAIL 자동결제는 검증 전 지원하지 않아" }
             require(normalizedCard.length in 12..19) { "카드번호를 확인해" }
             require(cardPassword.text.toString().matches(Regex("[0-9]{2}"))) { "카드 비밀번호 앞 2자리를 입력해" }
             require(cardExpire.text.toString().matches(Regex("[0-9]{4}"))) { "카드 유효기간을 YYMM으로 입력해" }
@@ -617,7 +695,8 @@ class MainActivity : ComponentActivity() {
             id, password, departure, arrival, dateValue, fromValue, toValue,
             passengerCount, special.isChecked, windowSeat.isChecked, 30, 60,
             autoPay.isChecked, normalizedCard, cardPassword.text.toString(),
-            cardExpire.text.toString(), cardValidation.text.toString()
+            cardExpire.text.toString(), cardValidation.text.toString(),
+            operator = operatorValue, trainType = trainTypeValue
         )
     }
 
