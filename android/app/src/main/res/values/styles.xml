@@ -2,10 +2,10 @@
     <style name="Theme.SrtMonitor" parent="Theme.Material3.DayNight.NoActionBar">
         <item name="android:fontFamily">sans</item>
         <item name="android:windowActionModeOverlay">true</item>
-        <item name="android:statusBarColor">@color/srt_background</item>
-        <item name="android:navigationBarColor">@color/srt_background</item>
-        <item name="android:windowLightStatusBar">true</item>
-        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:statusBarColor">@color/srt_navy</item>
+        <item name="android:navigationBarColor">@color/srt_navy</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
         <item name="colorPrimary">@color/srt_primary</item>
         <item name="colorOnPrimary">@color/srt_on_primary</item>
         <item name="colorSurface">@color/srt_surface</item>

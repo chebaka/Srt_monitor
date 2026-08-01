@@ -193,7 +193,7 @@ class MainActivity : ComponentActivity() {
     private fun sectionCard(title: String, caption: String, content: LinearLayout.() -> Unit): MaterialCardView {
         val card = MaterialCardView(this).apply {
             layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(14) }
-            radius = dp(18).toFloat()
+            radius = dp(14).toFloat()
             cardElevation = 0f
             strokeWidth = dp(1)
             setStrokeColor(color(R.color.srt_border))
@@ -203,7 +203,18 @@ class MainActivity : ComponentActivity() {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(18), dp(18), dp(18), dp(18))
         }
-        body.addView(text(title, 18f, R.color.srt_on_surface, true))
+        val sectionTitle = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        sectionTitle.addView(View(this).apply {
+            background = roundedBackground(color(R.color.srt_primary), 2)
+            layoutParams = LinearLayout.LayoutParams(dp(4), dp(22))
+        })
+        sectionTitle.addView(text(title, 17f, R.color.srt_on_surface, true).apply {
+            setPadding(dp(10), 0, 0, 0)
+        })
+        body.addView(sectionTitle)
         body.addView(text(caption, 13f, R.color.srt_secondary).apply {
             setPadding(0, dp(4), 0, 0)
         })
@@ -231,22 +242,25 @@ class MainActivity : ComponentActivity() {
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(16), dp(16), dp(16))
+            background = roundedBackground(color(R.color.srt_navy), 16)
         }
         header.addView(TextView(this).apply {
-            text = "S"
-            textSize = 20f
+            text = "SRT"
+            textSize = 16f
             gravity = Gravity.CENTER
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
             setTextColor(color(R.color.srt_on_primary))
-            background = roundedBackground(color(R.color.srt_primary), 14)
-            layoutParams = LinearLayout.LayoutParams(dp(52), dp(52))
+            letterSpacing = 0.05f
+            background = roundedBackground(color(R.color.srt_primary), 12)
+            layoutParams = LinearLayout.LayoutParams(dp(62), dp(52))
         })
         val headerCopy = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(14), 0, 0, 0)
         }
-        headerCopy.addView(text("SRT Watch", 27f, R.color.srt_on_surface, true))
-        headerCopy.addView(text("원하는 좌석을 기다리는 가장 간단한 방법", 13f, R.color.srt_secondary).apply {
+        headerCopy.addView(text("SRT Watch", 25f, R.color.srt_on_navy, true))
+        headerCopy.addView(text("원하는 좌석을 기다리는 가장 간단한 방법", 13f, R.color.srt_on_navy_muted).apply {
             setPadding(0, dp(3), 0, 0)
         })
         header.addView(headerCopy)

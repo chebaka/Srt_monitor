@@ -1,13 +1,16 @@
 <resources>
-    <color name="srt_background">#F5F7F4</color>
+    <color name="srt_background">#F2F4F7</color>
     <color name="srt_surface">#FFFFFF</color>
-    <color name="srt_surface_soft">#EEF3EF</color>
-    <color name="srt_on_surface">#1B201C</color>
-    <color name="srt_secondary">#647067</color>
-    <color name="srt_border">#DCE4DD</color>
-    <color name="srt_primary">#2F6B54</color>
+    <color name="srt_surface_soft">#EEF2F7</color>
+    <color name="srt_on_surface">#172236</color>
+    <color name="srt_secondary">#5F6C7E</color>
+    <color name="srt_border">#D9E0E8</color>
+    <color name="srt_primary">#C8102E</color>
     <color name="srt_on_primary">#FFFFFF</color>
-    <color name="srt_success_surface">#E8F3EB</color>
-    <color name="srt_warning_surface">#FFF4DD</color>
-    <color name="srt_error_surface">#FBE9E7</color>
+    <color name="srt_navy">#16283F</color>
+    <color name="srt_on_navy">#FFFFFF</color>
+    <color name="srt_on_navy_muted">#C1CEDD</color>
+    <color name="srt_success_surface">#E7F4EC</color>
+    <color name="srt_warning_surface">#FFF3D6</color>
+    <color name="srt_error_surface">#FBE8EB</color>
 </resources>
