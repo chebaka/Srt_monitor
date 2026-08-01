@@ -137,6 +137,48 @@ class MainActivity : ComponentActivity() {
         return wrapper to input
     }
 
+    private fun profileField(savedProfiles: List<String>): Pair<TextInputLayout, EditText> {
+        if (savedProfiles.isEmpty()) {
+            val pair = field("프로필 이름  예: 아내")
+            return Pair(pair.first, pair.second)
+        }
+
+        val input = MaterialAutoCompleteTextView(this).apply {
+            textSize = 16f
+            inputType = InputType.TYPE_CLASS_TEXT
+            isFocusable = false
+            isClickable = true
+            isCursorVisible = false
+            setTextColor(color(R.color.srt_on_surface))
+            contentDescription = "저장된 프로필 선택"
+            setAdapter(object : ArrayAdapter<String>(
+                this@MainActivity,
+                android.R.layout.simple_dropdown_item_1line,
+                savedProfiles.toMutableList()
+            ) {
+                override fun getView(position: Int, convertView: View?, parent: ViewGroup): View =
+                    super.getView(position, convertView, parent).apply {
+                        setPadding(dp(16), dp(12), dp(16), dp(12))
+                        (this as? TextView)?.textSize = 15f
+                    }
+            })
+            setOnClickListener { showDropDown() }
+            setOnItemClickListener { _, _, position, _ ->
+                (adapter?.getItem(position) as? String)?.let { loadProfile(it) }
+            }
+        }
+        val wrapper = TextInputLayout(this).apply {
+            hint = "저장된 프로필"
+            boxBackgroundMode = TextInputLayout.BOX_BACKGROUND_OUTLINE
+            endIconMode = TextInputLayout.END_ICON_DROPDOWN_MENU
+            setBoxCornerRadii(dp(10).toFloat(), dp(10).toFloat(), dp(10).toFloat(), dp(10).toFloat())
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) }
+            setEndIconOnClickListener { input.showDropDown() }
+            addView(input)
+        }
+        return Pair(wrapper, input)
+    }
+
     private fun stationField(label: String): Pair<TextInputLayout, MaterialAutoCompleteTextView> {
         val input = MaterialAutoCompleteTextView(this).apply {
             textSize = 16f
@@ -341,8 +383,14 @@ class MainActivity : ComponentActivity() {
         content.addView(header)
         content.addView(routePreview())
 
-        content.addView(sectionCard("프로필", "저장한 조건을 구분하는 이름") {
-            val profile = field("프로필 이름  예: 아내")
+        val savedProfiles = store.listProfiles()
+        val profileCaption = if (savedProfiles.isEmpty()) {
+            "처음 한 번 입력해 저장해"
+        } else {
+            "저장된 프로필을 목록에서 선택해"
+        }
+        content.addView(sectionCard("프로필", profileCaption) {
+            val profile = profileField(savedProfiles)
             profileName = profile.second
             addView(profile.first)
         })
@@ -524,13 +572,19 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun loadSavedProfile() {
-        val c = store.activeProfile()?.let { store.load(it) } ?: return
-        profileName.setText(store.activeProfile() ?: "")
+        store.activeProfile()?.let { loadProfile(it) }
+    }
+
+    private fun loadProfile(name: String) {
+        val c = store.load(name) ?: return
+        store.setActiveProfile(name)
+        profileName.setText(name)
         srtId.setText(c.srtId); srtPassword.setText(c.srtPassword); dep.setText(c.dep); arr.setText(c.arr)
         date.setText(c.date); timeFrom.setText(c.timeFrom); timeTo.setText(c.timeTo); passengers.setText(c.passengers.toString())
         special.isChecked = c.special; windowSeat.isChecked = c.windowSeat; autoPay.isChecked = c.autoPay
         cardNumber.setText(c.cardNumber); cardPassword.setText(c.cardPassword); cardExpire.setText(c.cardExpire); cardValidation.setText(c.cardValidation)
         updatePaymentVisibility()
+        updateRoutePreview()
     }
 
     private fun config(): MonitorConfig {
