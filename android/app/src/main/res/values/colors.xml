@@ -1,0 +1,13 @@
+<resources>
+    <color name="srt_background">#F5F7F4</color>
+    <color name="srt_surface">#FFFFFF</color>
+    <color name="srt_surface_soft">#EEF3EF</color>
+    <color name="srt_on_surface">#1B201C</color>
+    <color name="srt_secondary">#647067</color>
+    <color name="srt_border">#DCE4DD</color>
+    <color name="srt_primary">#2F6B54</color>
+    <color name="srt_on_primary">#FFFFFF</color>
+    <color name="srt_success_surface">#E8F3EB</color>
+    <color name="srt_warning_surface">#FFF4DD</color>
+    <color name="srt_error_surface">#FBE9E7</color>
+</resources>
