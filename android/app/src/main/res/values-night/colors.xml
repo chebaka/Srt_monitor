@@ -5,11 +5,11 @@
     <color name="srt_on_surface">#F4F7FB</color>
     <color name="srt_secondary">#AAB7C8</color>
     <color name="srt_border">#34455B</color>
-    <color name="srt_primary">#D21E3F</color>
-    <color name="srt_on_primary">#FFFFFF</color>
-    <color name="srt_navy">#0B1624</color>
+    <color name="srt_primary">#A56A94</color>
+    <color name="srt_on_primary">#24131F</color>
+    <color name="srt_navy">#242429</color>
     <color name="srt_on_navy">#FFFFFF</color>
-    <color name="srt_on_navy_muted">#B6C5D6</color>
+    <color name="srt_on_navy_muted">#CEC6CE</color>
     <color name="srt_success_surface">#1D382B</color>
     <color name="srt_warning_surface">#40351F</color>
     <color name="srt_error_surface">#442631</color>

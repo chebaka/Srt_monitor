@@ -17,7 +17,9 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Bundle
+import android.text.Editable
 import android.text.InputType
+import android.text.TextWatcher
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -63,6 +65,9 @@ class MainActivity : ComponentActivity() {
     private lateinit var autoPay: MaterialSwitch
     private lateinit var profileName: EditText
     private lateinit var paymentFields: LinearLayout
+    private lateinit var routeFromLabel: TextView
+    private lateinit var routeToLabel: TextView
+    private lateinit var routeMeta: TextView
 
     private val stationNames = listOf(
         "수서", "동탄", "평택지제", "곡성", "공주", "광주송정", "구례구", "김천(구미)",
@@ -223,6 +228,77 @@ class MainActivity : ComponentActivity() {
         return card
     }
 
+    private fun routePreview(): MaterialCardView {
+        val card = MaterialCardView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) }
+            radius = dp(16).toFloat()
+            cardElevation = 0f
+            strokeWidth = 0
+            setCardBackgroundColor(color(R.color.srt_navy))
+        }
+        val body = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(18), dp(20), dp(18))
+        }
+        body.addView(text("좌석 대기표", 12f, R.color.srt_on_navy_muted, true).apply {
+            letterSpacing = 0.08f
+        })
+        val routeRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(16) }
+        }
+        routeFromLabel = text("출발역", 22f, R.color.srt_on_navy, true)
+        routeFromLabel.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        routeRow.addView(routeFromLabel)
+        routeRow.addView(text("→", 22f, R.color.srt_on_navy, true).apply {
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(dp(42), -2)
+        })
+        routeToLabel = text("도착역", 22f, R.color.srt_on_navy, true).apply {
+            gravity = Gravity.END
+        }
+        routeToLabel.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        routeRow.addView(routeToLabel)
+        body.addView(routeRow)
+        routeMeta = text("탑승 날짜 · 조회 시간을 설정해", 13f, R.color.srt_on_navy_muted).apply {
+            setPadding(0, dp(12), 0, 0)
+        }
+        body.addView(routeMeta)
+        card.addView(body)
+        return card
+    }
+
+    private fun bindRoutePreview(input: EditText) {
+        input.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = updateRoutePreview()
+            override fun afterTextChanged(s: Editable?) = Unit
+        })
+    }
+
+    private fun updateRoutePreview() {
+        if (!::routeFromLabel.isInitialized) return
+        val departure = dep.text.toString().trim()
+        val arrival = arr.text.toString().trim()
+        routeFromLabel.text = departure.ifEmpty { "출발역" }
+        routeToLabel.text = arrival.ifEmpty { "도착역" }
+        val dateValue = date.text.toString()
+        val dateText = if (dateValue.matches(Regex("[0-9]{8}"))) {
+            "${dateValue.substring(0, 4)}.${dateValue.substring(4, 6)}.${dateValue.substring(6)}"
+        } else {
+            "탑승 날짜"
+        }
+        val fromValue = timeFrom.text.toString()
+        val toValue = timeTo.text.toString()
+        val timeText = if (fromValue.length >= 4 && toValue.length >= 4) {
+            "조회 ${fromValue.substring(0, 2)}:${fromValue.substring(2, 4)} - ${toValue.substring(0, 2)}:${toValue.substring(2, 4)}"
+        } else {
+            "조회 시간"
+        }
+        routeMeta.text = "$dateText  ·  $timeText"
+    }
+
     private fun pickerField(label: String, onClick: (EditText) -> Unit): Pair<TextInputLayout, TextInputEditText> {
         val pair = field(label)
         pair.second.apply {
@@ -242,29 +318,28 @@ class MainActivity : ComponentActivity() {
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(16), dp(16), dp(16), dp(16))
-            background = roundedBackground(color(R.color.srt_navy), 16)
+            setPadding(dp(2), dp(8), dp(2), dp(8))
         }
         header.addView(TextView(this).apply {
             text = "SRT"
-            textSize = 16f
+            textSize = 18f
             gravity = Gravity.CENTER
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-            setTextColor(color(R.color.srt_on_primary))
+            setTextColor(color(R.color.srt_primary))
             letterSpacing = 0.05f
-            background = roundedBackground(color(R.color.srt_primary), 12)
-            layoutParams = LinearLayout.LayoutParams(dp(62), dp(52))
+            layoutParams = LinearLayout.LayoutParams(dp(52), -2)
         })
         val headerCopy = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(14), 0, 0, 0)
         }
-        headerCopy.addView(text("SRT Watch", 25f, R.color.srt_on_navy, true))
-        headerCopy.addView(text("원하는 좌석을 기다리는 가장 간단한 방법", 13f, R.color.srt_on_navy_muted).apply {
+        headerCopy.addView(text("Watch", 24f, R.color.srt_navy, true))
+        headerCopy.addView(text("SRT 좌석 알림 도우미", 13f, R.color.srt_secondary).apply {
             setPadding(0, dp(3), 0, 0)
         })
         header.addView(headerCopy)
         content.addView(header)
+        content.addView(routePreview())
 
         content.addView(sectionCard("프로필", "저장한 조건을 구분하는 이름") {
             val profile = field("프로필 이름  예: 아내")
@@ -284,13 +359,16 @@ class MainActivity : ComponentActivity() {
         content.addView(sectionCard("여행 조건", "SRT 역 이름을 정확히 입력해") {
             val departure = stationField("출발역")
             dep = departure.second
+            bindRoutePreview(dep)
             addView(departure.first)
             val arrival = stationField("도착역")
             arr = arrival.second
+            bindRoutePreview(arr)
             addView(arrival.first)
 
             val dateField = pickerField("탑승 날짜") { pickDate() }
             date = dateField.second
+            bindRoutePreview(date)
             addView(dateField.first)
 
             val timeRow = LinearLayout(this@MainActivity).apply {
@@ -299,10 +377,12 @@ class MainActivity : ComponentActivity() {
             }
             val fromField = pickerField("조회 시작") { pickTime(timeFrom) }
             timeFrom = fromField.second
+            bindRoutePreview(timeFrom)
             fromField.first.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = dp(5) }
             timeRow.addView(fromField.first)
             val toField = pickerField("조회 종료") { pickTime(timeTo) }
             timeTo = toField.second
+            bindRoutePreview(timeTo)
             toField.first.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = dp(5) }
             timeRow.addView(toField.first)
             addView(timeRow)
