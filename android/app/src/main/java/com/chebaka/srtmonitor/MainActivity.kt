@@ -22,8 +22,10 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.widget.ArrayAdapter
 import android.widget.CheckBox
 import android.widget.EditText
+import android.widget.Filter
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -33,9 +35,11 @@ import androidx.core.content.ContextCompat
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.card.MaterialCardView
 import com.google.android.material.materialswitch.MaterialSwitch
+import com.google.android.material.textfield.MaterialAutoCompleteTextView
 import com.google.android.material.textfield.TextInputEditText
 import com.google.android.material.textfield.TextInputLayout
 import java.util.Calendar
+import java.util.Locale
 import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
@@ -59,6 +63,13 @@ class MainActivity : ComponentActivity() {
     private lateinit var autoPay: MaterialSwitch
     private lateinit var profileName: EditText
     private lateinit var paymentFields: LinearLayout
+
+    private val stationNames = listOf(
+        "수서", "동탄", "평택지제", "곡성", "공주", "광주송정", "구례구", "김천(구미)",
+        "나주", "남원", "대전", "동대구", "마산", "목포", "밀양", "부산", "서대구", "순천",
+        "신경주", "경주", "여수EXPO", "여천", "오송", "울산(통도사)", "익산", "전주",
+        "정읍", "진영", "진주", "창원", "창원중앙", "천안아산", "포항"
+    )
 
     private val statusReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -116,6 +127,64 @@ class MainActivity : ComponentActivity() {
             boxBackgroundMode = TextInputLayout.BOX_BACKGROUND_OUTLINE
             setBoxCornerRadii(dp(10).toFloat(), dp(10).toFloat(), dp(10).toFloat(), dp(10).toFloat())
             layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) }
+            addView(input)
+        }
+        return wrapper to input
+    }
+
+    private fun stationField(label: String): Pair<TextInputLayout, MaterialAutoCompleteTextView> {
+        val input = MaterialAutoCompleteTextView(this).apply {
+            textSize = 16f
+            includeFontPadding = false
+            threshold = 0
+            inputType = InputType.TYPE_CLASS_TEXT
+            setTextColor(color(R.color.srt_on_surface))
+            setAdapter(object : ArrayAdapter<String>(
+                this@MainActivity,
+                android.R.layout.simple_dropdown_item_1line,
+                stationNames.toMutableList()
+            ) {
+                private val stationFilter = object : Filter() {
+                    override fun performFiltering(constraint: CharSequence?): FilterResults {
+                        val query = constraint?.toString()?.trim()?.lowercase(Locale.ROOT).orEmpty()
+                        val matches = if (query.isEmpty()) {
+                            stationNames
+                        } else {
+                            stationNames.filter { it.lowercase(Locale.ROOT).contains(query) }
+                        }
+                        return FilterResults().apply {
+                            values = matches
+                            count = matches.size
+                        }
+                    }
+
+                    override fun publishResults(constraint: CharSequence?, results: FilterResults?) {
+                        clear()
+                        @Suppress("UNCHECKED_CAST")
+                        addAll((results?.values as? List<String>).orEmpty())
+                        notifyDataSetChanged()
+                    }
+                }
+
+                override fun getFilter(): Filter = stationFilter
+
+                override fun getView(position: Int, convertView: View?, parent: ViewGroup): View =
+                    super.getView(position, convertView, parent).apply {
+                        setPadding(dp(16), dp(12), dp(16), dp(12))
+                        (this as? TextView)?.textSize = 15f
+                    }
+            })
+            setOnFocusChangeListener { _, focused -> if (focused) showDropDown() }
+            setOnClickListener { showDropDown() }
+            setOnItemClickListener { _, _, _, _ -> dismissDropDown() }
+        }
+        val wrapper = TextInputLayout(this).apply {
+            hint = label
+            boxBackgroundMode = TextInputLayout.BOX_BACKGROUND_OUTLINE
+            endIconMode = TextInputLayout.END_ICON_DROPDOWN_MENU
+            setBoxCornerRadii(dp(10).toFloat(), dp(10).toFloat(), dp(10).toFloat(), dp(10).toFloat())
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) }
+            setEndIconOnClickListener { input.showDropDown() }
             addView(input)
         }
         return wrapper to input
@@ -199,10 +268,10 @@ class MainActivity : ComponentActivity() {
         })
 
         content.addView(sectionCard("여행 조건", "SRT 역 이름을 정확히 입력해") {
-            val departure = field("출발역")
+            val departure = stationField("출발역")
             dep = departure.second
             addView(departure.first)
-            val arrival = field("도착역")
+            val arrival = stationField("도착역")
             arr = arrival.second
             addView(arrival.first)
 
