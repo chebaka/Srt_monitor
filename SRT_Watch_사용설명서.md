@@ -7,7 +7,7 @@ SRT Watch는 지정한 날짜·구간·노선의 SRT 좌석을 주기적으로 �
 - 앱 패키지: `com.chebaka.srtmonitor`
 - 현재 버전: `0.1.0` debug APK
 - 현재 APK: `android/app/build/outputs/apk/debug/app-debug.apk`
-- 현재 APK SHA-256: `CCF8F7DFBB52D19416DB799E4C1D4341A5175BC6B247DC809119B4D12B08DAD6`
+- 현재 APK SHA-256: `F4B616E952FF75F6B12504833EA5CBE6120FA443D2DEFFC7D831136F93A866A4`
 
 > 현재 APK는 debug 빌드다. 실제 휴대폰에서 SRT 로그인·예약·결제 전체 흐름은 아직 최종 검증 전이므로, 처음에는 자동결제를 끄고 사용한다.
 
@@ -120,4 +120,3 @@ SRT Watch는 지정한 날짜·구간·노선의 SRT 좌석을 주기적으로 �
 - x86_64 Android 에뮬레이터 설치·실행 성공
 - 테스트 환경의 SRT 로그인 및 예약 목록 조회 성공
 - 실제 휴대폰에서의 실예약·실결제는 아직 검증하지 않음
-
