@@ -12,6 +12,7 @@ from datetime import datetime
 from functools import wraps
 
 from SRT import SRT
+from SRT.constants import STATION_CODE
 from SRT.passenger import Adult
 from SRT.seat_type import SeatType
 
@@ -133,6 +134,10 @@ def _validate_config(config):
         raise ValueError("날짜 또는 시간 형식이 잘못됐어") from error
     if config["timeFrom"] > config["timeTo"]:
         raise ValueError("종료 시각은 시작 시각 이후여야 해")
+    if config["dep"] not in STATION_CODE:
+        raise ValueError(f'출발역을 SRT 역명으로 입력해 (예: 수서): {config["dep"]}')
+    if config["arr"] not in STATION_CODE:
+        raise ValueError(f'도착역을 SRT 역명으로 입력해 (예: 부산): {config["arr"]}')
 
     try:
         passengers = int(config.get("passengers", 0))
@@ -166,7 +171,11 @@ def run_monitor_json(config_json, callback):
     config = json.loads(config_json)
     if not isinstance(config, dict):
         raise ValueError("설정 형식이 잘못됐어")
-    _validate_config(config)
+    try:
+        _validate_config(config)
+    except Exception as error:
+        _emit(callback, f"🔴 입력 확인 실패: {_safe_error(error, config)}")
+        return
 
     _stop.clear()
     consecutive_errors = 0

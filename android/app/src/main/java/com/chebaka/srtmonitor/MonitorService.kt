@@ -71,6 +71,7 @@ class MonitorService : Service() {
         message.startsWith("✅ 예약 성공:") ||
             message.contains("예약·결제 완료") ||
             message.startsWith("🔴 예약 완료") ||
+            message.startsWith("🔴 입력 확인 실패:") ||
             message.contains("기존 예약이 있어") ||
             message.contains("연속 오류 5회") ||
             message.startsWith("🔴 모니터링 실패:")
