@@ -31,6 +31,7 @@
 - `MainActivity.kt`
   - 운영사 선택만 제공하며 KORAIL 열차 종류 선택은 제공하지 않음
   - SRT와 KORAIL 선택에 따라 출발역·도착역 목록을 교체
+  - KORAIL 역 목록은 공식 `stationdata` 기준 281개 스냅샷
   - 출발역·도착역·날짜·시간으로 KORAIL 전체 열차 조회
   - KORAIL 선택 시 자동결제·창가 우선 비활성화
 
@@ -53,6 +54,7 @@
 - https://pypi.org/project/SRTrain/
 - https://pypi.org/project/korail2/
 - https://github.com/carpedm20/korail2
+- https://smart.letskorail.com/classes/com.korail.mobile.common.stationdata
 
 ## 검증 완료
 
