@@ -34,7 +34,7 @@ android/app/build/outputs/apk/debug/app-debug.apk
 
 ## Important status
 
-The Android shell, encrypted multi-profile storage, foreground service, UI, and Python bridge are present. `srt_engine.py` handles SRT; `korail_engine.py` handles route-based KORAIL monitoring and reservation across train types. After a KORAIL reservation, the result notification opens installed KORAIL Talk when available, offers the official web payment page, and automatically checks the paid ticket list until the payment deadline. KORAIL automatic card payment is intentionally disabled because the selected client does not provide a verified payment API. Live SRT/KORAIL login and reservation still need real-device verification before production use.
+The Android shell, encrypted multi-profile storage, foreground service, UI, and Python bridge are present. `srt_engine.py` handles SRT; `korail_engine.py` handles route-based KORAIL monitoring and reservation across train types. After a KORAIL reservation, the result notification opens installed KORAIL Talk when available, offers the official web reservation list/payment route, and automatically checks the paid ticket list until the payment deadline. KORAIL automatic card payment is intentionally disabled because the selected client does not provide a verified payment API. Live SRT/KORAIL login and reservation still need real-device verification before production use.
 
 ## Security
 

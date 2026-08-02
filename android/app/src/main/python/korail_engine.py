@@ -69,6 +69,10 @@ def _existing_reservation(client, config):
     return None
 
 
+def _reservation_train_no(reservation):
+    return str(getattr(reservation, "train_no", "") or "").strip()
+
+
 def _find_candidate(client, config):
     passengers = [AdultPassenger(count=config["passengers"])]
     try:
@@ -265,7 +269,12 @@ def run_monitor_json(config_json, callback):
                 _emit(callback, "KORAIL|로그인 완료")
                 existing = _existing_reservation(client, config)
                 if existing:
-                    _emit(callback, f"KORAIL|기존 예약 발견|{existing.rsv_id}")
+                    train_no = _reservation_train_no(existing)
+                    _emit(
+                        callback,
+                        f"KORAIL|기존 예약 결제 대기|예약번호 {existing.rsv_id}|열차번호 {train_no}|결제기한 {existing.buy_limit_date} {existing.buy_limit_time}",
+                    )
+                    _wait_for_payment(client, config, existing, train_no, callback)
                     return
 
             _emit(callback, "KORAIL|열차 조회 중")
