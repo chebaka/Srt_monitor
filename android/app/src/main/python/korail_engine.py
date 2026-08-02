@@ -106,8 +106,10 @@ def _ticket_matches_config(ticket, config, train_no=""):
         ticket.dep_date == config["date"]
         and ticket.dep_name == config["dep"]
         and ticket.arr_name == config["arr"]
+        and (not config.get("depCode") or getattr(ticket, "dep_code", "") == config["depCode"])
+        and (not config.get("arrCode") or getattr(ticket, "arr_code", "") == config["arrCode"])
         and config["timeFrom"] <= ticket.dep_time <= config["timeTo"]
-        and (not train_no or ticket.train_no == train_no)
+        and (not train_no or str(getattr(ticket, "train_no", "")).strip() == train_no)
     )
 
 
