@@ -268,6 +268,18 @@ class MainActivity : ComponentActivity() {
             inputType = InputType.TYPE_CLASS_TEXT
             setTextColor(color(R.color.srt_on_surface))
             setAdapter(adapter)
+            addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(text: CharSequence?, start: Int, count: Int, after: Int) = Unit
+                override fun onTextChanged(text: CharSequence?, start: Int, before: Int, count: Int) = Unit
+                override fun afterTextChanged(text: Editable?) {
+                    val query = text?.toString()?.trim().orEmpty()
+                    post {
+                        if (hasFocus() && query.isNotEmpty() && query !in stationNamesForRailway() && adapter.count > 0) {
+                            showDropDown()
+                        }
+                    }
+                }
+            })
             setOnFocusChangeListener { _, focused -> if (focused) showDropDown() }
             setOnClickListener { showDropDown() }
             setOnItemClickListener { _, _, _, _ -> dismissDropDown() }

@@ -67,6 +67,7 @@
 - APK: `android/app/build/outputs/apk/debug/app-debug.apk`
 - x86_64 AVD에 APK 재설치 성공 및 `MainActivity` 실행 확인
 - UIAutomator 덤프에서 철도 선택 영역과 KORAIL 안내 문구 확인, `열차 종류` 항목 없음 확인
+- 에뮬레이터에서 역 입력 `EXPO` → `여수EXPO` 필터 결과 선택 확인
 - `git diff --check` 통과
 
 ## 아직 검증하지 못한 것
