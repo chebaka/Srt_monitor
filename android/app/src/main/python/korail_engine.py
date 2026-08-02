@@ -14,15 +14,6 @@ from korail2 import AdultPassenger, Korail, NoResultsError, ReserveOption
 
 _stop = threading.Event()
 
-TRAIN_CODES = {
-    "KTX": "100",
-    "ITX_SAEMAEUL": "101",
-    "ITX_CHEONGCHUN": "104",
-    "SAEMAEUL": "101",
-    "MUGUNGHWA": "102",
-}
-
-
 def stop_monitor():
     _stop.set()
 
@@ -52,21 +43,6 @@ def _login(config):
     return client
 
 
-def _train_type_matches(train, requested_type):
-    name = str(getattr(train, "train_type_name", ""))
-    if requested_type == "KTX":
-        return name.startswith("KTX")
-    if requested_type == "ITX_SAEMAEUL":
-        return name.startswith("ITX-새마을")
-    if requested_type == "ITX_CHEONGCHUN":
-        return name.startswith("ITX-청춘")
-    if requested_type == "SAEMAEUL":
-        return name.startswith("새마을")
-    if requested_type == "MUGUNGHWA":
-        return name.startswith("무궁화")
-    return False
-
-
 def _existing_reservation(client, config):
     for reservation in client.reservations():
         if reservation.dep_date != config["date"]:
@@ -75,8 +51,7 @@ def _existing_reservation(client, config):
             continue
         if not (config["timeFrom"] <= reservation.dep_time <= config["timeTo"]):
             continue
-        if _train_type_matches(reservation, config["trainType"]):
-            return reservation
+        return reservation
     return None
 
 
@@ -88,7 +63,6 @@ def _find_candidate(client, config):
             config["arr"],
             config["date"],
             config["timeFrom"],
-            train_type=TRAIN_CODES[config["trainType"]],
             passengers=passengers,
             include_no_seats=True,
         )
@@ -96,8 +70,6 @@ def _find_candidate(client, config):
         return None
 
     for train in trains:
-        if not _train_type_matches(train, config["trainType"]):
-            continue
         if not (config["timeFrom"] <= train.dep_time <= config["timeTo"]):
             continue
         available = train.has_special_seat() if config["special"] else train.has_general_seat()
@@ -132,11 +104,6 @@ def _validate_config(config):
     required = ("srtId", "srtPassword", "dep", "arr", "date", "timeFrom", "timeTo")
     if any(not str(config.get(key, "")).strip() for key in required):
         raise ValueError("필수 KORAIL 조건이 비어 있어")
-
-    train_type = str(config.get("trainType", "")).strip()
-    if train_type not in TRAIN_CODES:
-        raise ValueError("지원하지 않는 KORAIL 열차 종류야")
-    config["trainType"] = train_type
 
     config["date"] = str(config["date"]).strip()
     config["timeFrom"] = str(config["timeFrom"]).strip()

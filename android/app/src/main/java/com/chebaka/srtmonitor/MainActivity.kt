@@ -69,10 +69,8 @@ class MainActivity : ComponentActivity() {
     private lateinit var routeToLabel: TextView
     private lateinit var routeMeta: TextView
     private lateinit var railway: MaterialAutoCompleteTextView
-    private lateinit var trainType: MaterialAutoCompleteTextView
 
     private val railwayOptions = listOf("SRT", "KORAIL")
-    private val trainTypeOptions = listOf("SRT", "KTX", "ITX-새마을", "ITX-청춘", "새마을", "무궁화")
 
     private val stationNames = listOf(
         "수서", "동탄", "평택지제", "곡성", "공주", "광주송정", "구례구", "김천(구미)",
@@ -266,18 +264,6 @@ class MainActivity : ComponentActivity() {
         return wrapper to input
     }
 
-    private fun trainTypeKey(label: String): String = when (label) {
-        "ITX-새마을" -> "ITX_SAEMAEUL"
-        "ITX-청춘" -> "ITX_CHEONGCHUN"
-        else -> label
-    }
-
-    private fun trainTypeLabel(key: String): String = when (key) {
-        "ITX_SAEMAEUL" -> "ITX-새마을"
-        "ITX_CHEONGCHUN" -> "ITX-청춘"
-        else -> key
-    }
-
     private fun updateRailwayCapabilities() {
         val isKorail = ::railway.isInitialized && railway.text.toString() == "KORAIL"
         if (::windowSeat.isInitialized) {
@@ -430,24 +416,19 @@ class MainActivity : ComponentActivity() {
             setPadding(dp(14), 0, 0, 0)
         }
         headerCopy.addView(text("Watch", 24f, R.color.srt_navy, true))
-        headerCopy.addView(text("SRT·KTX 좌석 알림 도우미", 13f, R.color.srt_secondary).apply {
+        headerCopy.addView(text("SRT·KORAIL 좌석 알림 도우미", 13f, R.color.srt_secondary).apply {
             setPadding(0, dp(3), 0, 0)
         })
         header.addView(headerCopy)
         content.addView(header)
         content.addView(routePreview())
 
-        content.addView(sectionCard("철도 선택", "SRT 또는 KORAIL 열차를 선택해") {
+        content.addView(sectionCard("철도 선택", "SRT 또는 KORAIL을 선택해") {
             val railwayField = choiceField("철도 운영사", railwayOptions)
             railway = railwayField.second
             railway.setText("SRT", false)
             railway.setOnItemClickListener { _, _, _, _ -> updateRailwayCapabilities() }
             addView(railwayField.first)
-
-            val trainField = choiceField("열차 종류", trainTypeOptions)
-            trainType = trainField.second
-            trainType.setText("SRT", false)
-            addView(trainField.first)
         })
 
         val savedProfiles = store.listProfiles()
@@ -648,7 +629,6 @@ class MainActivity : ComponentActivity() {
         store.setActiveProfile(name)
         profileName.setText(name)
         railway.setText(c.operator, false)
-        trainType.setText(trainTypeLabel(c.trainType), false)
         srtId.setText(c.srtId); srtPassword.setText(c.srtPassword); dep.setText(c.dep); arr.setText(c.arr)
         date.setText(c.date); timeFrom.setText(c.timeFrom); timeTo.setText(c.timeTo); passengers.setText(c.passengers.toString())
         special.isChecked = c.special; windowSeat.isChecked = c.windowSeat; autoPay.isChecked = c.autoPay
@@ -668,14 +648,11 @@ class MainActivity : ComponentActivity() {
         val fromValue = timeFrom.text.toString()
         val toValue = timeTo.text.toString()
         val operatorValue = railway.text.toString().trim()
-        val trainTypeValue = trainTypeKey(trainType.text.toString().trim())
         val passengerCount = passengers.text.toString().toIntOrNull()
         val normalizedCard = cardNumber.text.toString().filter { it.isDigit() }
 
         require(name.length <= 40) { "프로필 이름은 40자 이내로 입력해" }
         require(operatorValue in railwayOptions) { "철도 운영사를 선택해" }
-        require(trainTypeValue in setOf("SRT", "KTX", "ITX_SAEMAEUL", "ITX_CHEONGCHUN", "SAEMAEUL", "MUGUNGHWA")) { "열차 종류를 선택해" }
-        require((operatorValue == "SRT") == (trainTypeValue == "SRT")) { "SRT는 SRT, KORAIL은 KTX 계열을 선택해" }
         require(id.isNotEmpty() && password.isNotEmpty()) { "철도 계정과 비밀번호를 입력해" }
         require(departure.isNotEmpty() && arrival.isNotEmpty() && departure != arrival) { "출발역과 도착역을 확인해" }
         require(dateValue.matches(Regex("[0-9]{8}"))) { "탑승 날짜를 선택해" }
@@ -695,8 +672,7 @@ class MainActivity : ComponentActivity() {
             id, password, departure, arrival, dateValue, fromValue, toValue,
             passengerCount, special.isChecked, windowSeat.isChecked, 30, 60,
             autoPay.isChecked, normalizedCard, cardPassword.text.toString(),
-            cardExpire.text.toString(), cardValidation.text.toString(),
-            operator = operatorValue, trainType = trainTypeValue
+            cardExpire.text.toString(), cardValidation.text.toString(), operator = operatorValue
         )
     }
 

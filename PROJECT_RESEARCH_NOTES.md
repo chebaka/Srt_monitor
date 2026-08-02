@@ -4,13 +4,14 @@
 
 ## 목적
 
-기존 SRT 모니터를 기준선으로 보존하면서 KORAIL의 KTX·ITX·새마을·무궁화 열차를 모니터링하고 예약할 수 있는 Android 앱으로 확장한다. SRT와 KORAIL 경로는 별도 엔진으로 유지하고, 검증되지 않은 자동결제는 실행하지 않는다.
+기존 SRT 모니터를 기준선으로 보존하면서 KORAIL의 KTX·ITX·새마을·무궁화 열차를 역 구간 기준으로 모두 모니터링하고 예약할 수 있는 Android 앱으로 확장한다. SRT와 KORAIL 경로는 별도 엔진으로 유지하고, 검증되지 않은 자동결제는 실행하지 않는다.
 
 ## 현재 Git 상태
 
 - 기준선: `main` 브랜치
 - 구현 브랜치: `feature/korail-monitor`
-- 최근 구현 커밋: `beb2452 feat(rail): add KORAIL monitoring path`
+- 초기 구현 커밋: `beb2452 feat(rail): add KORAIL monitoring path`
+- 현재 변경: KORAIL 열차 종류 선택 제거 및 전체 열차 조회 전환
 - 기준선 보존 원칙: SRT 기존 엔진을 직접 교체하지 않고 서비스에서 엔진을 분기한다.
 
 ## 현재 구조
@@ -24,21 +25,19 @@
 - `MonitorService.kt`
   - 프로필의 `operator`가 `KORAIL`이면 `korail_engine`, 그 외에는 `srt_engine` 호출
 - `ProfileStore.kt`
-  - 기존 프로필과 호환되도록 `operator` 기본값 `SRT`, `trainType` 기본값 `SRT`
+  - 기존 프로필과 호환되도록 `operator` 기본값 `SRT` 유지
+  - 기존 저장 JSON의 `trainType` 값은 무시
   - Android Keystore AES-GCM 암호화 유지
 - `MainActivity.kt`
-  - 운영사와 열차 종류 선택 추가
+  - 운영사 선택만 제공하며 KORAIL 열차 종류 선택은 제공하지 않음
+  - 출발역·도착역·날짜·시간으로 KORAIL 전체 열차 조회
   - KORAIL 선택 시 자동결제·창가 우선 비활성화
 
 ## 지원 열차
 
-| 화면 표시 | 내부 키 | KORAIL 조회 코드 |
+| 조회 대상 | 사용자 입력 | KORAIL 조회 코드 |
 |---|---|---|
-| KTX | `KTX` | `100` |
-| ITX-새마을 | `ITX_SAEMAEUL` | `101` |
-| ITX-청춘 | `ITX_CHEONGCHUN` | `104` |
-| 새마을 | `SAEMAEUL` | `101` |
-| 무궁화 | `MUGUNGHWA` | `102` |
+| KTX·ITX·새마을·무궁화 등 전체 | 열차 종류 없음 | `TrainType.ALL` 기본값 (`109`) |
 
 ## 의존성 결정
 
@@ -57,12 +56,13 @@
 ## 검증 완료
 
 - `py -3 -m py_compile android/app/src/main/python/srt_engine.py android/app/src/main/python/korail_engine.py`
-- KORAIL 설정 검증·열차 필터·자동결제 차단 self-check 통과
+- KORAIL 설정 검증·전체 열차 조회 경로·자동결제 차단 self-check 통과
 - `android/gradlew.bat assembleDebug` 통과
+- KORAIL 전체 열차 조회 self-check 통과: 검색 호출에 `train_type` 필터 없음
 - x86_64 ABI 포함 재빌드 통과: `arm64-v8a`, `x86_64`
 - APK: `android/app/build/outputs/apk/debug/app-debug.apk`
-- x86_64 AVD에 APK 설치 성공 및 `MainActivity` 실행 확인
-- UIAutomator 덤프에서 철도 선택 영역과 KORAIL 안내 문구 확인
+- x86_64 AVD에 APK 재설치 성공 및 `MainActivity` 실행 확인
+- UIAutomator 덤프에서 철도 선택 영역과 KORAIL 안내 문구 확인, `열차 종류` 항목 없음 확인
 - `git diff --check` 통과
 
 ## 아직 검증하지 못한 것
