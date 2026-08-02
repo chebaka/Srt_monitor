@@ -497,9 +497,8 @@ class MainActivity : ComponentActivity() {
             if (isKorail) windowSeat.isChecked = false
         }
         if (::autoPay.isInitialized) {
-            autoPay.isEnabled = !isKorail
-            if (isKorail) autoPay.isChecked = false
-            autoPay.text = if (isKorail) "공식 결제 화면에서 결제" else "좌석 발견 시 자동결제"
+            autoPay.isEnabled = true
+            autoPay.text = if (isKorail) "좌석 발견 시 KORAIL 자동결제" else "좌석 발견 시 SRT 자동결제"
             updatePaymentVisibility()
         }
     }
@@ -730,7 +729,7 @@ class MainActivity : ComponentActivity() {
             addView(options)
         })
 
-        content.addView(sectionCard("결제 방식", "SRT는 자동결제, KORAIL은 공식 결제 화면으로 이어져") {
+        content.addView(sectionCard("결제 방식", "SRT·KORAIL 자동결제. KORAIL은 모바일 결제 경로를 사용해") {
             autoPay = MaterialSwitch(this@MainActivity).apply {
                 text = "좌석 발견 시 자동결제"
                 textSize = 15f
@@ -738,7 +737,7 @@ class MainActivity : ComponentActivity() {
                 setOnCheckedChangeListener { _, _ -> updatePaymentVisibility() }
             }
             addView(autoPay)
-            addView(text("SRT만 자동결제 지원. KORAIL은 예약 후 공식 결제 화면 알림을 제공해. 스위치를 켜야 카드정보를 결제에 사용해.", 12f, R.color.srt_secondary).apply {
+            addView(text("스위치를 켜야 카드정보를 결제에 사용해. KORAIL 자동결제 실패 시 공식 결제 화면으로 전환해.", 12f, R.color.srt_secondary).apply {
                 setPadding(0, dp(3), 0, 0)
             })
 
@@ -837,7 +836,7 @@ class MainActivity : ComponentActivity() {
 
     private fun updatePaymentVisibility() {
         if (::paymentFields.isInitialized) {
-            paymentFields.visibility = if (selectedRailway == "KORAIL") View.GONE else View.VISIBLE
+            paymentFields.visibility = View.VISIBLE
         }
     }
 
@@ -901,7 +900,6 @@ class MainActivity : ComponentActivity() {
         require(passengerCount != null && passengerCount > 0) { "성인 인원은 1명 이상 입력해" }
         require(!windowSeat.isChecked || operatorValue == "SRT") { "KORAIL 창가 우선은 아직 지원하지 않아" }
         if (autoPay.isChecked) {
-            require(operatorValue == "SRT") { "KORAIL 자동결제는 검증 전 지원하지 않아" }
             require(normalizedCard.length in 12..19) { "카드번호를 확인해" }
             require(cardPassword.text.toString().matches(Regex("[0-9]{2}"))) { "카드 비밀번호 앞 2자리를 입력해" }
             require(cardExpire.text.toString().matches(Regex("[0-9]{4}"))) { "카드 유효기간을 YYMM으로 입력해" }

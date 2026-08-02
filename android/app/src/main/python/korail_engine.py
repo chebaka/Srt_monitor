@@ -1,8 +1,8 @@
 """KORAIL monitoring and reservation engine.
 
-This module reserves KORAIL trains and can monitor the official payment state
-until the reservation deadline. It never submits card data or guesses a
-payment endpoint.
+This module reserves KORAIL trains and can monitor the payment state until the
+reservation deadline. KORAIL card payment is an explicit opt-in, one-shot call
+to the known mobile payment endpoint; transport errors are never retried.
 """
 import json
 import random
@@ -17,6 +17,14 @@ _stop = threading.Event()
 _payment_check = threading.Event()
 _PAYMENT_POLL_SECONDS = 60
 _MAX_PAYMENT_ERRORS = 5
+_KORAIL_RESERVATION_INFO_URL = (
+    "https://smart.letskorail.com:443/classes/"
+    "com.korail.mobile.certification.ReservationList"
+)
+_KORAIL_PAYMENT_URL = (
+    "https://smart.letskorail.com:443/classes/"
+    "com.korail.mobile.payment.ReservationPayment"
+)
 
 def stop_monitor():
     _stop.set()
@@ -51,6 +59,70 @@ def _login(config):
     if not client.login():
         raise RuntimeError("KORAIL login failed")
     return client
+
+
+def _response_detail(payload, fallback):
+    return str(
+        payload.get("h_msg_txt")
+        or payload.get("strMsg")
+        or payload.get("msg")
+        or fallback
+    ).strip()[:180]
+
+
+def _reservation_wct_no(client, reservation):
+    response = client._session.get(
+        _KORAIL_RESERVATION_INFO_URL,
+        params={
+            "Device": client._device,
+            "Version": client._version,
+            "Key": client._key,
+            "hidPnrNo": reservation.rsv_id,
+        },
+    )
+    payload = json.loads(response.text)
+    if payload.get("strResult") != "SUCC":
+        raise RuntimeError(_response_detail(payload, "예약 결제정보 조회 실패"))
+    wct_no = str(payload.get("h_wct_no", "")).strip()
+    if not wct_no:
+        raise RuntimeError("예약 결제정보 식별자를 받지 못했어")
+    return wct_no
+
+
+def _pay_with_card(client, reservation, config):
+    """Attempt one opt-in payment through the KORAIL mobile endpoint.
+
+    The field mapping follows the MIT-licensed srtgo KTX client. Do not retry
+    after a transport error: the server may have accepted the payment already.
+    """
+    wct_no = _reservation_wct_no(client, reservation)
+    data = {
+        "Device": client._device,
+        "Version": client._version,
+        "Key": client._key,
+        "hidPnrNo": reservation.rsv_id,
+        "hidWctNo": wct_no,
+        "hidTmpJobSqno1": "000000",
+        "hidTmpJobSqno2": "000000",
+        "hidRsvChgNo": "000",
+        "hidInrecmnsGridcnt": "1",
+        "hidStlMnsSqno1": "1",
+        "hidStlMnsCd1": "02",
+        "hidMnsStlAmt1": str(reservation.price),
+        "hidCrdInpWayCd1": "@",
+        "hidStlCrCrdNo1": config["cardNumber"],
+        "hidVanPwd1": config["cardPassword"],
+        "hidCrdVlidTrm1": config["cardExpire"],
+        "hidIsmtMnthNum1": "0",
+        "hidAthnDvCd1": "J",
+        "hidAthnVal1": config["cardValidation"],
+        "hiduserYn": "Y",
+    }
+    response = client._session.post(_KORAIL_PAYMENT_URL, data=data)
+    payload = json.loads(response.text)
+    if payload.get("strResult") != "SUCC":
+        raise RuntimeError(_response_detail(payload, "코레일 자동결제가 거절됐어"))
+    return True
 
 
 def _existing_reservation(client, config):
@@ -240,7 +312,22 @@ def _validate_config(config):
     if config.get("windowSeat"):
         raise ValueError("KORAIL 창가 우선은 아직 지원하지 않아")
     if config.get("autoPay"):
-        raise ValueError("KORAIL 자동결제는 검증 전 지원하지 않아")
+        card_number = re.sub(r"[^0-9]", "", str(config.get("cardNumber", "")))
+        card_password = str(config.get("cardPassword", "")).strip()
+        card_expire = re.sub(r"[^0-9]", "", str(config.get("cardExpire", "")))
+        card_validation = re.sub(r"[^0-9]", "", str(config.get("cardValidation", "")))
+        if len(card_number) not in range(12, 20):
+            raise ValueError("카드번호를 확인해")
+        if not re.fullmatch(r"[0-9]{2}", card_password):
+            raise ValueError("카드 비밀번호 앞 2자리를 입력해")
+        if not re.fullmatch(r"[0-9]{4}", card_expire):
+            raise ValueError("카드 유효기간을 YYMM으로 입력해")
+        if not re.fullmatch(r"[0-9]{6}|[0-9]{10}", card_validation):
+            raise ValueError("카드 인증번호를 확인해")
+        config["cardNumber"] = card_number
+        config["cardPassword"] = card_password
+        config["cardExpire"] = card_expire
+        config["cardValidation"] = card_validation
 
 
 def run_monitor_json(config_json, callback):
@@ -292,6 +379,13 @@ def run_monitor_json(config_json, callback):
                 callback,
                 f"KORAIL|예약 완료|결제 필요|예약번호 {reservation.rsv_id}|열차번호 {candidate.train_no}|결제기한 {reservation.buy_limit_date} {reservation.buy_limit_time}",
             )
+            if config.get("autoPay"):
+                try:
+                    _emit(callback, f"KORAIL|자동결제 시도|열차번호 {candidate.train_no}")
+                    _pay_with_card(client, reservation, config)
+                    _emit(callback, f"KORAIL|자동결제 요청 완료|열차번호 {candidate.train_no}")
+                except Exception as error:
+                    _emit(callback, f"KORAIL|자동결제 실패|{_safe_error(error, config)}")
             _wait_for_payment(client, config, reservation, candidate.train_no, callback)
             return
         except Exception as error:

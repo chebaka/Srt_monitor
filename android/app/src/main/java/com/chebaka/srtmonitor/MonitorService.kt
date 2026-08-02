@@ -152,6 +152,7 @@ class MonitorService : Service() {
         text.startsWith(KORAIL_PAYMENT_REQUIRED_PREFIX) ||
             text.startsWith(KORAIL_PAYMENT_WAITING_PREFIX) ||
             text.startsWith(KORAIL_EXISTING_PAYMENT_WAITING_PREFIX) ||
+            text.startsWith(KORAIL_PAYMENT_AUTO_ERROR_PREFIX) ||
             text.startsWith(KORAIL_PAYMENT_ERROR_PREFIX)
 
     private fun activityPendingIntent(intent: Intent, requestCode: Int): PendingIntent =
@@ -198,6 +199,7 @@ class MonitorService : Service() {
         private const val KORAIL_PAYMENT_REQUIRED_PREFIX = "KORAIL|예약 완료|결제 필요"
         private const val KORAIL_PAYMENT_WAITING_PREFIX = "KORAIL|결제 대기"
         private const val KORAIL_EXISTING_PAYMENT_WAITING_PREFIX = "KORAIL|기존 예약 결제 대기"
+        private const val KORAIL_PAYMENT_AUTO_ERROR_PREFIX = "KORAIL|자동결제 실패"
         private const val KORAIL_PAYMENT_ERROR_PREFIX = "KORAIL|결제 확인 오류"
         private const val KORAIL_PAYMENT_URL = "https://www.korail.com/ticket/reservation/list"
         private const val KORAIL_TALK_PACKAGE = "com.korail.talk"
