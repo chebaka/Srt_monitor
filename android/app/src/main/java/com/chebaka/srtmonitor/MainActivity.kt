@@ -495,6 +495,7 @@ class MainActivity : ComponentActivity() {
         if (::autoPay.isInitialized) {
             autoPay.isEnabled = !isKorail
             if (isKorail) autoPay.isChecked = false
+            autoPay.text = if (isKorail) "공식 결제 화면에서 결제" else "좌석 발견 시 자동결제"
             updatePaymentVisibility()
         }
     }
@@ -721,7 +722,7 @@ class MainActivity : ComponentActivity() {
             addView(options)
         })
 
-        content.addView(sectionCard("자동결제", "좌석을 확보한 뒤 결제까지 자동으로 진행") {
+        content.addView(sectionCard("결제 방식", "SRT는 자동결제, KORAIL은 공식 결제 화면으로 이어져") {
             autoPay = MaterialSwitch(this@MainActivity).apply {
                 text = "좌석 발견 시 자동결제"
                 textSize = 15f
