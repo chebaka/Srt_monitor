@@ -49,6 +49,10 @@ def _existing_reservation(client, config):
             continue
         if reservation.dep_name != config["dep"] or reservation.arr_name != config["arr"]:
             continue
+        if config.get("depCode") and getattr(reservation, "dep_code", "") != config["depCode"]:
+            continue
+        if config.get("arrCode") and getattr(reservation, "arr_code", "") != config["arrCode"]:
+            continue
         if not (config["timeFrom"] <= reservation.dep_time <= config["timeTo"]):
             continue
         return reservation
@@ -101,7 +105,7 @@ def _validate_config(config):
     if config.get("operator", "SRT") != "KORAIL":
         raise ValueError("KORAIL engine received a non-KORAIL profile")
 
-    required = ("srtId", "srtPassword", "dep", "arr", "date", "timeFrom", "timeTo")
+    required = ("srtId", "srtPassword", "dep", "arr", "date", "timeFrom", "timeTo", "depCode", "arrCode")
     if any(not str(config.get(key, "")).strip() for key in required):
         raise ValueError("필수 KORAIL 조건이 비어 있어")
 
@@ -124,6 +128,10 @@ def _validate_config(config):
         config[key] = station
     if config["dep"] == config["arr"]:
         raise ValueError("출발역과 도착역은 달라야 해")
+    for key in ("depCode", "arrCode"):
+        if not re.fullmatch(r"[0-9]{4}", str(config[key]).strip()):
+            raise ValueError("코레일 역 코드가 잘못됐어")
+        config[key] = str(config[key]).strip()
 
     try:
         passengers = int(config.get("passengers", 0))

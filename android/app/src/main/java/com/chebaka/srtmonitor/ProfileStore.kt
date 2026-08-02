@@ -30,7 +30,9 @@ import javax.crypto.spec.GCMParameterSpec
     val cardPassword: String,
     val cardExpire: String,
     val cardValidation: String,
-    val operator: String = "SRT"
+    val operator: String = "SRT",
+    val depCode: String = "",
+    val arrCode: String = ""
 ) {
     fun toJson(): String = JSONObject().apply {
         put("srtId", srtId); put("srtPassword", srtPassword)
@@ -41,7 +43,7 @@ import javax.crypto.spec.GCMParameterSpec
         put("autoPay", autoPay); put("cardNumber", cardNumber)
         put("cardPassword", cardPassword); put("cardExpire", cardExpire)
         put("cardValidation", cardValidation)
-        put("operator", operator)
+        put("operator", operator); put("depCode", depCode); put("arrCode", arrCode)
     }.toString()
 }
 
@@ -70,7 +72,11 @@ class ProfileStore(context: Context) {
                 o.getBoolean("special"), o.getBoolean("windowSeat"), o.getInt("pollMin"), o.getInt("pollMax"),
                 o.getBoolean("autoPay"), o.optString("cardNumber"), o.optString("cardPassword"),
                 o.optString("cardExpire"), o.optString("cardValidation")
-            ).copy(operator = o.optString("operator", "SRT"))
+            ).copy(
+                operator = o.optString("operator", "SRT"),
+                depCode = o.optString("depCode"),
+                arrCode = o.optString("arrCode")
+            )
         } catch (_: Exception) { null }
     }
 

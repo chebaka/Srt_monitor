@@ -20,6 +20,7 @@
   - 기존 SRT 로그인·조회·예약·선택적 결제 경로
 - `android/app/src/main/python/korail_engine.py`
   - KORAIL 로그인·조회·좌석 필터·예약 경로
+  - 조회는 역명을 API에 전달하고, 역코드는 프로필 및 기존 예약 식별값으로 검증
   - 예약 완료 후 결제 필요 상태로 종료
   - 자동결제와 KORAIL 창가 우선은 입력 단계에서 차단
 - `MonitorService.kt`
@@ -31,10 +32,18 @@
 - `MainActivity.kt`
   - 운영사 선택만 제공하며 KORAIL 열차 종류 선택은 제공하지 않음
   - SRT와 KORAIL 선택에 따라 출발역·도착역 목록을 교체
-  - KORAIL 역 목록은 공식 `stationdata` 기준 281개 스냅샷
-  - 역 목록은 수도권·강원권·충청권·전라권·경상권·기타 지역 헤더로 그룹화
+  - KORAIL 역 목록은 `StationRepository`의 공식 `stationdata` 조회 결과를 사용
+  - 24시간 캐시와 281개 번들 스냅샷을 함께 두어 네트워크 실패·오프라인에서도 동작
+  - 역명·역코드(`stn_nm`·`stn_cd`)를 검증하고 프로필에 역코드를 저장
+  - 역 목록은 즐겨찾기·최근 선택을 먼저 보여준 뒤 수도권·강원권·충청권·전라권·경상권·기타 지역으로 그룹화
+  - 입력 문자열을 포함하는 역만 즉시 필터링하고, 별표 버튼으로 철도별 즐겨찾기를 저장
   - 출발역·도착역·날짜·시간으로 KORAIL 전체 열차 조회
   - KORAIL 선택 시 자동결제·창가 우선 비활성화
+
+- `StationRepository.kt`
+  - 공개 KORAIL stationdata 엔드포인트에서 역명·역코드를 갱신
+  - HTTPS·응답 크기 제한·타임아웃·JSON 구조·4자리 역코드 검증 적용
+  - 캐시가 없거나 갱신에 실패하면 번들된 공식 281개 스냅샷으로 폴백
 
 ## 지원 열차
 
@@ -66,10 +75,12 @@
 - KORAIL 선택 시 전용 역 목록으로 교체되는 UI 경로 반영
 - x86_64 ABI 포함 재빌드 통과: `arm64-v8a`, `x86_64`
 - APK: `android/app/build/outputs/apk/debug/app-debug.apk`
-- x86_64 AVD에 APK 재설치 성공 및 `MainActivity` 실행 확인
+- x86_64 AVD에 최신 APK 재설치 성공 및 `MainActivity` 실행 확인
 - UIAutomator 덤프에서 철도 선택 영역과 KORAIL 안내 문구 확인, `열차 종류` 항목 없음 확인
-- 에뮬레이터에서 역 입력 `EXPO` → `여수EXPO` 필터 결과 선택 확인
-- 지역 헤더 포함 역 목록 APK 빌드·설치·실행 확인
+- 에뮬레이터에서 SRT·KORAIL 역 입력 `EXPO` → `여수EXPO` 필터 결과 선택 확인
+- 에뮬레이터에서 KORAIL 창가 우선·자동결제 비활성화 확인
+- 에뮬레이터에서 출발역 즐겨찾기 별표 토글 확인
+- 공식 stationdata 응답 281개·역코드 형식 확인
 - `git diff --check` 통과
 
 ## 아직 검증하지 못한 것

@@ -40,12 +40,14 @@ import com.google.android.material.materialswitch.MaterialSwitch
 import com.google.android.material.textfield.MaterialAutoCompleteTextView
 import com.google.android.material.textfield.TextInputEditText
 import com.google.android.material.textfield.TextInputLayout
+import org.json.JSONArray
 import java.util.Calendar
 import java.util.Locale
 import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
     private lateinit var store: ProfileStore
+    private lateinit var stationRepository: StationRepository
     private lateinit var status: TextView
     private lateinit var statusCard: MaterialCardView
     private lateinit var date: EditText
@@ -79,44 +81,7 @@ class MainActivity : ComponentActivity() {
         "정읍", "진영", "진주", "창원", "창원중앙", "천안아산", "포항"
     )
 
-    private val korailStationNames = listOf(
-        "가남", "가평", "각계", "감곡장호원", "강경", "강구", "강릉", "강진",
-        "강촌", "개포", "경산", "경주", "계룡", "고래불", "고한", "곡성",
-        "공주", "광명", "광양", "광주", "광주송정", "광천", "구례구", "구미",
-        "구포", "군북", "군산", "군위", "극락강", "근덕", "기성", "기장",
-        "김제", "김천", "김천구미", "나전", "나주", "남성현", "남원", "남창",
-        "남춘천", "논산", "능주", "다시", "단양", "대곡", "대구", "대야",
-        "대전", "대천", "덕소", "도계", "도고온천", "도라산", "동대구", "동백산",
-        "동탄", "동해", "둔내", "득량", "마산", "마석", "만종", "매곡",
-        "매화", "명봉", "목포", "몽탄", "무안", "묵호", "문경", "문산",
-        "물금", "민둥산", "밀양", "반성", "백양리", "백양사", "벌교", "별어곡",
-        "보성", "봉양", "봉화", "부강", "부발", "부산", "부전", "북영천",
-        "북울산", "북천", "분천", "비동", "사릉", "사북", "사상", "살미",
-        "삼랑진", "삼례", "삼산", "삼척", "삼척해변", "삼탄", "삽교", "상동",
-        "상봉", "상주", "서경주", "서광주", "서대구", "서대전", "서울", "서원주",
-        "서정리", "서천", "서화성", "석불", "석포", "선평", "성환", "센텀",
-        "송추", "수서", "수안보온천", "수원", "순천", "승부", "신기", "신동",
-        "신례원", "신보성", "신창", "신탄진", "신태인", "신해운대", "심천", "쌍룡",
-        "아산", "아우라지", "아화", "안강", "안동", "안양", "안중", "앙성온천",
-        "약목", "양동", "양원", "양평", "여수EXPO", "여천", "연산", "연풍",
-        "영덕", "영동", "영등포", "영암", "영월", "영주", "영천", "영해",
-        "예당", "예미", "예산", "예천", "오근장", "오산", "오송", "오수",
-        "옥산", "옥수", "옥원", "옥천", "온양온천", "완사", "왕십리", "왜관",
-        "용궁", "용문", "용산", "운천", "울산(통도사)", "울진", "웅천", "원동",
-        "원릉", "원주", "월포", "음성", "의성", "의정부", "이양", "이원",
-        "익산", "인주", "인천공항T1", "인천공항T2", "일로", "일신", "일영", "임기",
-        "임성리", "임실", "임원", "임진강", "장동", "장사", "장성", "장항",
-        "장흥", "전남장흥", "전의", "전주", "점촌", "정동진", "정선", "정읍",
-        "제천", "조성", "조치원", "주덕", "죽변", "중리", "증평", "지탄",
-        "지평", "진례", "진부(오대산)", "진상", "진영", "진주", "창원", "창원중앙",
-        "천안", "천안아산", "철암", "청도", "청량리", "청리", "청소", "청주",
-        "청주공항", "청평", "추암", "추풍령", "춘양", "춘천", "충주", "태백",
-        "태화강", "퇴계원", "판교(경기)", "판교(충남)", "평내호평", "평창", "평택", "평택지제",
-        "평해", "포항", "풍기", "하동", "하양", "한림정", "함안", "함열",
-        "함창", "함평", "합덕", "해남", "행신", "향남", "현동", "홍성",
-        "화명", "화성시청", "화순", "황간", "횡성", "횡천", "효천", "후포",
-        "흥부"
-    )
+    private var korailStationNames = StationRepository.fallbackStations.map { it.name }
 
     private val srtStationRegions = linkedMapOf(
         "수도권" to listOf("수서", "동탄", "평택지제"),
@@ -156,6 +121,10 @@ class MainActivity : ComponentActivity() {
 
     private val regionHeaderPrefix = "\u0000"
     private val stationAdapters = mutableListOf<ArrayAdapter<String>>()
+    private val stationInputs = mutableListOf<MaterialAutoCompleteTextView>()
+    private val favoriteButtons = mutableListOf<MaterialButton>()
+    private val stationPreferences by lazy { getSharedPreferences("station_preferences", Context.MODE_PRIVATE) }
+    private val recentStationLimit = 5
 
     private val statusReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -167,16 +136,22 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         store = ProfileStore(this)
+        stationRepository = StationRepository(this)
         createChannel()
         requestNotificationPermission()
         buildUi()
         loadSavedProfile()
+        stationRepository.refresh { stations ->
+            korailStationNames = stations.map { it.name }
+            refreshStationOptions()
+        }
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(statusReceiver, IntentFilter(MonitorService.ACTION_STATUS), RECEIVER_NOT_EXPORTED)
         else registerReceiver(statusReceiver, IntentFilter(MonitorService.ACTION_STATUS))
     }
 
     override fun onDestroy() {
         unregisterReceiver(statusReceiver)
+        stationRepository.close()
         super.onDestroy()
     }
 
@@ -260,8 +235,8 @@ class MainActivity : ComponentActivity() {
         return Pair(wrapper, input)
     }
 
-    private fun stationRegionsForRailway(): List<Pair<String, List<String>>> {
-        val allStations = stationNamesForRailway().toSet()
+    private fun stationRegionsForRailway(excluded: Set<String> = emptySet()): List<Pair<String, List<String>>> {
+        val allStations = stationNamesForRailway().filterNot { it in excluded }.toSet()
         val source = if (::railway.isInitialized && railway.text.toString() == "KORAIL") {
             korailStationRegions.toList()
         } else {
@@ -271,15 +246,67 @@ class MainActivity : ComponentActivity() {
             region to stations.filter { it in allStations }
         }.filter { it.second.isNotEmpty() }
         val groupedNames = grouped.flatMap { it.second }.toSet()
-        val remaining = stationNamesForRailway().filterNot { it in groupedNames }
+        val remaining = stationNamesForRailway().filter { it !in groupedNames && it !in excluded }
         return if (remaining.isEmpty()) grouped else grouped + ("기타" to remaining)
     }
 
     private fun isRegionHeader(value: String): Boolean = value.startsWith(regionHeaderPrefix)
 
+    private fun railwayStationKey(): String =
+        if (::railway.isInitialized && railway.text.toString() == "KORAIL") "korail" else "srt"
+
+    private fun stationPreferenceKey(kind: String): String = "${railwayStationKey()}_$kind"
+
+    private fun readStationList(kind: String): List<String> {
+        val raw = stationPreferences.getString(stationPreferenceKey(kind), null) ?: return emptyList()
+        return try {
+            val values = JSONArray(raw)
+            buildList(values.length()) {
+                for (index in 0 until values.length()) {
+                    values.optString(index).trim().takeIf { it.isNotEmpty() }?.let(::add)
+                }
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    private fun writeStationList(kind: String, names: List<String>) {
+        val values = JSONArray()
+        names.distinct().forEach(values::put)
+        stationPreferences.edit().putString(stationPreferenceKey(kind), values.toString()).apply()
+    }
+
+    private fun rememberStation(name: String) {
+        if (name !in stationNamesForRailway()) return
+        val updated = listOf(name) + readStationList("recent").filterNot { it == name }
+        writeStationList("recent", updated.take(recentStationLimit))
+    }
+
+    private fun isFavoriteStation(name: String): Boolean = name in readStationList("favorites")
+
+    private fun toggleFavoriteStation(name: String) {
+        if (name !in stationNamesForRailway()) return
+        val favorites = readStationList("favorites")
+        writeStationList("favorites", if (name in favorites) favorites.filterNot { it == name } else listOf(name) + favorites)
+    }
+
     private fun stationDropdownItems(query: String = ""): List<String> {
         val normalized = query.trim().lowercase(Locale.ROOT)
-        return stationRegionsForRailway().flatMap { (region, stations) ->
+        val matches: (String) -> Boolean = { station ->
+            normalized.isEmpty() || station.lowercase(Locale.ROOT).contains(normalized)
+        }
+        val allStations = stationNamesForRailway().toSet()
+        val favorites = readStationList("favorites").filter { it in allStations && matches(it) }
+        val recent = readStationList("recent").filter { it in allStations && it !in favorites && matches(it) }
+        val priorityNames = (favorites + recent).distinct()
+        val priorityItems = buildList {
+            if (favorites.isNotEmpty()) add(regionHeaderPrefix + "즐겨찾기")
+            addAll(favorites)
+            if (recent.isNotEmpty()) add(regionHeaderPrefix + "최근 선택")
+            addAll(recent)
+        }
+        val regionItems = stationRegionsForRailway(priorityNames.toSet()).flatMap { (region, stations) ->
             val matches = if (normalized.isEmpty()) {
                 stations
             } else {
@@ -287,9 +314,10 @@ class MainActivity : ComponentActivity() {
             }
             if (matches.isEmpty()) emptyList() else listOf(regionHeaderPrefix + region) + matches
         }
+        return priorityItems + regionItems
     }
 
-    private fun stationField(label: String): Pair<TextInputLayout, MaterialAutoCompleteTextView> {
+    private fun stationField(label: String): Pair<View, MaterialAutoCompleteTextView> {
         val adapter = object : ArrayAdapter<String>(
             this,
             android.R.layout.simple_dropdown_item_1line,
@@ -337,6 +365,7 @@ class MainActivity : ComponentActivity() {
                 }
         }
         stationAdapters += adapter
+        var favoriteButton: MaterialButton? = null
         val input = MaterialAutoCompleteTextView(this).apply {
             textSize = 16f
             includeFontPadding = false
@@ -349,6 +378,7 @@ class MainActivity : ComponentActivity() {
                 override fun onTextChanged(text: CharSequence?, start: Int, before: Int, count: Int) = Unit
                 override fun afterTextChanged(text: Editable?) {
                     val query = text?.toString()?.trim().orEmpty()
+                    favoriteButton?.text = if (isFavoriteStation(query)) "★" else "☆"
                     post {
                         if (hasFocus() && query.isNotEmpty() && query !in stationNamesForRailway() && adapter.count > 0) {
                             showDropDown()
@@ -358,22 +388,63 @@ class MainActivity : ComponentActivity() {
             })
             setOnFocusChangeListener { _, focused -> if (focused) showDropDown() }
             setOnClickListener { showDropDown() }
-            setOnItemClickListener { _, _, _, _ -> dismissDropDown() }
+            setOnItemClickListener { _, _, position, _ ->
+                val selected = adapter.getItem(position).orEmpty()
+                if (!isRegionHeader(selected)) {
+                    rememberStation(selected)
+                    favoriteButton?.text = if (isFavoriteStation(selected)) "★" else "☆"
+                    refreshStationOptions()
+                }
+                dismissDropDown()
+            }
         }
         val wrapper = TextInputLayout(this).apply {
             hint = label
             boxBackgroundMode = TextInputLayout.BOX_BACKGROUND_OUTLINE
             endIconMode = TextInputLayout.END_ICON_DROPDOWN_MENU
             setBoxCornerRadii(dp(10).toFloat(), dp(10).toFloat(), dp(10).toFloat(), dp(10).toFloat())
-            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) }
+            layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
             setEndIconOnClickListener { input.showDropDown() }
             addView(input)
         }
-        return wrapper to input
+        stationInputs += input
+        favoriteButton = MaterialButton(this).apply {
+            text = if (isFavoriteStation(input.text.toString())) "★" else "☆"
+            textSize = 20f
+            minWidth = 0
+            minimumWidth = 0
+            setPadding(0, 0, 0, 0)
+            contentDescription = "$label 즐겨찾기"
+            layoutParams = LinearLayout.LayoutParams(dp(48), -2).apply { marginStart = dp(6) }
+            setOnClickListener {
+                val selected = input.text.toString().trim()
+                if (selected in stationNamesForRailway()) {
+                    toggleFavoriteStation(selected)
+                    text = if (isFavoriteStation(selected)) "★" else "☆"
+                    refreshStationOptions()
+                }
+            }
+        }
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) }
+            addView(wrapper)
+            addView(favoriteButton)
+        }
+        favoriteButtons += favoriteButton
+        return row to input
     }
 
     private fun stationNamesForRailway(): List<String> =
         if (::railway.isInitialized && railway.text.toString() == "KORAIL") korailStationNames else srtStationNames
+
+    private fun stationCode(name: String): String =
+        if (::railway.isInitialized && railway.text.toString() == "KORAIL") {
+            stationRepository.find(name)?.code.orEmpty()
+        } else {
+            ""
+        }
 
     private fun refreshStationOptions() {
         val stations = stationNamesForRailway()
@@ -381,6 +452,9 @@ class MainActivity : ComponentActivity() {
             adapter.clear()
             adapter.addAll(stationDropdownItems())
             adapter.notifyDataSetChanged()
+        }
+        stationInputs.zip(favoriteButtons).forEach { (input, button) ->
+            button.text = if (isFavoriteStation(input.text.toString().trim())) "★" else "☆"
         }
         if (::dep.isInitialized && dep.text.toString() !in stations) dep.setText("")
         if (::arr.isInitialized && arr.text.toString() !in stations) arr.setText("")
@@ -781,6 +855,7 @@ class MainActivity : ComponentActivity() {
         date.setText(c.date); timeFrom.setText(c.timeFrom); timeTo.setText(c.timeTo); passengers.setText(c.passengers.toString())
         special.isChecked = c.special; windowSeat.isChecked = c.windowSeat; autoPay.isChecked = c.autoPay
         cardNumber.setText(c.cardNumber); cardPassword.setText(c.cardPassword); cardExpire.setText(c.cardExpire); cardValidation.setText(c.cardValidation)
+        rememberStation(c.dep); rememberStation(c.arr)
         updateRailwayCapabilities()
         updatePaymentVisibility()
         updateRoutePreview()
@@ -796,11 +871,16 @@ class MainActivity : ComponentActivity() {
         val fromValue = timeFrom.text.toString()
         val toValue = timeTo.text.toString()
         val operatorValue = railway.text.toString().trim()
+        val departureCode = stationCode(departure)
+        val arrivalCode = stationCode(arrival)
         val passengerCount = passengers.text.toString().toIntOrNull()
         val normalizedCard = cardNumber.text.toString().filter { it.isDigit() }
 
         require(name.length <= 40) { "프로필 이름은 40자 이내로 입력해" }
         require(operatorValue in railwayOptions) { "철도 운영사를 선택해" }
+        if (operatorValue == "KORAIL") {
+            require(departureCode.matches(Regex("[0-9]{4}")) && arrivalCode.matches(Regex("[0-9]{4}"))) { "코레일 역 목록에서 출발역과 도착역을 선택해" }
+        }
         require(id.isNotEmpty() && password.isNotEmpty()) { "철도 계정과 비밀번호를 입력해" }
         require(departure.isNotEmpty() && arrival.isNotEmpty() && departure != arrival) { "출발역과 도착역을 확인해" }
         require(dateValue.matches(Regex("[0-9]{8}"))) { "탑승 날짜를 선택해" }
@@ -820,7 +900,8 @@ class MainActivity : ComponentActivity() {
             id, password, departure, arrival, dateValue, fromValue, toValue,
             passengerCount, special.isChecked, windowSeat.isChecked, 30, 60,
             autoPay.isChecked, normalizedCard, cardPassword.text.toString(),
-            cardExpire.text.toString(), cardValidation.text.toString(), operator = operatorValue
+            cardExpire.text.toString(), cardValidation.text.toString(), operator = operatorValue,
+            depCode = departureCode, arrCode = arrivalCode
         )
     }
 
