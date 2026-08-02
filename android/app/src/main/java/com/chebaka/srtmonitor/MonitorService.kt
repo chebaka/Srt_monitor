@@ -73,6 +73,7 @@ class MonitorService : Service() {
         val n = notification(message)
         getSystemService(NotificationManager::class.java).notify(if (finished) RESULT_NOTIFICATION_ID else NOTIFICATION_ID, n)
         if (finished) {
+            getSystemService(NotificationManager::class.java).cancel(NOTIFICATION_ID)
             stopForeground(STOP_FOREGROUND_DETACH)
             stopSelf()
         }
