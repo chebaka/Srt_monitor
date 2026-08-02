@@ -101,7 +101,7 @@ class MonitorService : Service() {
             .setOngoing(!isFinished(text))
             .setAutoCancel(isFinished(text))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
-        if (text.startsWith(KORAIL_PAYMENT_REQUIRED_PREFIX)) {
+        if (isKorailPaymentPending(text)) {
             val webIntent = Intent(Intent.ACTION_VIEW, Uri.parse(KORAIL_PAYMENT_URL))
             val webPendingIntent = activityPendingIntent(webIntent, KORAIL_PAYMENT_REQUEST_CODE)
             val korailTalkIntent = packageManager.getLaunchIntentForPackage(KORAIL_TALK_PACKAGE)
@@ -137,6 +137,11 @@ class MonitorService : Service() {
     private fun fieldValue(text: String, prefix: String): String =
         text.split('|').firstOrNull { it.startsWith(prefix) }?.removePrefix(prefix)?.trim().orEmpty()
 
+    private fun isKorailPaymentPending(text: String): Boolean =
+        text.startsWith(KORAIL_PAYMENT_REQUIRED_PREFIX) ||
+            text.startsWith(KORAIL_PAYMENT_WAITING_PREFIX) ||
+            text.startsWith(KORAIL_PAYMENT_ERROR_PREFIX)
+
     private fun activityPendingIntent(intent: Intent, requestCode: Int): PendingIntent =
         PendingIntent.getActivity(
             this,
@@ -153,9 +158,12 @@ class MonitorService : Service() {
             message.contains("기존 예약이 있어") ||
             message.contains("연속 오류 5회") ||
             message.startsWith("🔴 모니터링 실패:") ||
-            message.startsWith("KORAIL|예약 완료") ||
             message.startsWith("KORAIL|기존 예약 발견") ||
-            message.startsWith("KORAIL|결제 확인") ||
+            message.startsWith("KORAIL|결제 확인 완료") ||
+            message.startsWith("KORAIL|결제 미확인") ||
+            message.startsWith("KORAIL|결제 확인 실패") ||
+            message.startsWith("KORAIL|결제 기한 만료") ||
+            message.startsWith("KORAIL|결제 확인 중단") ||
             message.startsWith("KORAIL|입력 확인 실패") ||
             message.startsWith("KORAIL|연속 오류")
 
@@ -172,6 +180,8 @@ class MonitorService : Service() {
         const val NOTIFICATION_ID = 1001
         const val RESULT_NOTIFICATION_ID = 1002
         private const val KORAIL_PAYMENT_REQUIRED_PREFIX = "KORAIL|예약 완료|결제 필요"
+        private const val KORAIL_PAYMENT_WAITING_PREFIX = "KORAIL|결제 대기"
+        private const val KORAIL_PAYMENT_ERROR_PREFIX = "KORAIL|결제 확인 오류"
         private const val KORAIL_PAYMENT_URL = "https://www.korail.com/ticket/payment/payment"
         private const val KORAIL_TALK_PACKAGE = "com.korail.talk"
         private const val KORAIL_PAYMENT_REQUEST_CODE = 2001

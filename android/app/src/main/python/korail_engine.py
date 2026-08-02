@@ -1,7 +1,8 @@
 """KORAIL monitoring and reservation engine.
 
-This module intentionally stops after reservation. KORAIL payment is not
-implemented by the selected client and must not be guessed or retried.
+This module reserves KORAIL trains and can monitor the official payment state
+until the reservation deadline. It never submits card data or guesses a
+payment endpoint.
 """
 import json
 import random
@@ -13,6 +14,8 @@ from korail2 import AdultPassenger, Korail, NoResultsError, ReserveOption
 
 
 _stop = threading.Event()
+_PAYMENT_POLL_SECONDS = 60
+_MAX_PAYMENT_ERRORS = 5
 
 def stop_monitor():
     _stop.set()
@@ -131,6 +134,47 @@ def verify_payment_json(config_json, callback, train_no=""):
         _emit(callback, f"KORAIL|결제 확인 실패|{_safe_error(error, safe_config)}")
 
 
+def _payment_deadline(reservation):
+    date_value = str(getattr(reservation, "buy_limit_date", "")).strip()
+    time_value = str(getattr(reservation, "buy_limit_time", "")).strip()
+    if len(time_value) == 4:
+        time_value += "00"
+    return datetime.strptime(date_value + time_value, "%Y%m%d%H%M%S")
+
+
+def _wait_for_payment(client, config, reservation, train_no, callback):
+    """Observe official ticket issuance without attempting payment."""
+    try:
+        deadline = _payment_deadline(reservation)
+    except (TypeError, ValueError):
+        _emit(callback, f"KORAIL|결제 확인 중단|열차번호 {train_no}|결제기한을 읽지 못했어")
+        return
+
+    deadline_text = f"{reservation.buy_limit_date} {reservation.buy_limit_time}"
+    _emit(callback, f"KORAIL|결제 대기|열차번호 {train_no}|결제기한 {deadline_text}")
+    consecutive_errors = 0
+    while not _stop.is_set():
+        remaining = (deadline - datetime.now()).total_seconds()
+        if remaining <= 0:
+            _emit(callback, f"KORAIL|결제 기한 만료|열차번호 {train_no}|결제기한 {deadline_text}")
+            return
+        try:
+            tickets = client.tickets() or []
+            if any(_ticket_matches_config(ticket, config, str(train_no).strip()) for ticket in tickets):
+                _emit(callback, f"KORAIL|결제 확인 완료|열차번호 {train_no}|발권 목록에서 확인됨")
+                return
+            consecutive_errors = 0
+        except Exception as error:
+            consecutive_errors += 1
+            detail = _safe_error(error, config)
+            if consecutive_errors >= _MAX_PAYMENT_ERRORS:
+                _emit(callback, f"KORAIL|결제 확인 중단|열차번호 {train_no}|연속 오류 {_MAX_PAYMENT_ERRORS}회|{detail}")
+                return
+            _emit(callback, f"KORAIL|결제 확인 오류|열차번호 {train_no}|재시도 {consecutive_errors}/{_MAX_PAYMENT_ERRORS}|{detail}")
+        if _wait(min(_PAYMENT_POLL_SECONDS, max(1, int(remaining)))):
+            return
+
+
 def _validate_config(config):
     if config.get("operator", "SRT") != "KORAIL":
         raise ValueError("KORAIL engine received a non-KORAIL profile")
@@ -220,6 +264,7 @@ def run_monitor_json(config_json, callback):
                 callback,
                 f"KORAIL|예약 완료|결제 필요|예약번호 {reservation.rsv_id}|열차번호 {candidate.train_no}|결제기한 {reservation.buy_limit_date} {reservation.buy_limit_time}",
             )
+            _wait_for_payment(client, config, reservation, candidate.train_no, callback)
             return
         except Exception as error:
             consecutive_errors += 1
