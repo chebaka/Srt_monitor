@@ -118,6 +118,43 @@ class MainActivity : ComponentActivity() {
         "흥부"
     )
 
+    private val srtStationRegions = linkedMapOf(
+        "수도권" to listOf("수서", "동탄", "평택지제"),
+        "충청권" to listOf("천안아산", "오송", "공주", "대전"),
+        "전라권" to listOf("익산", "전주", "정읍", "광주송정", "나주", "목포", "곡성", "구례구", "남원", "순천", "여수EXPO", "여천"),
+        "경상권" to listOf("김천(구미)", "동대구", "서대구", "신경주", "경주", "울산(통도사)", "포항", "밀양", "마산", "진영", "진주", "창원", "창원중앙", "부산")
+    )
+
+    private val korailStationRegions = linkedMapOf(
+        "수도권" to listOf(
+            "가남", "가평", "감곡장호원", "광명", "동탄", "마석", "문산", "부발", "사릉", "상봉", "서울", "서정리", "서화성", "성환",
+            "송추", "수서", "수원", "안양", "안중", "양평", "영등포", "왕십리", "용산", "운천", "원릉", "의정부", "인천공항T1", "인천공항T2",
+            "일영", "임진강", "청량리", "청평", "퇴계원", "평내호평", "평택", "평택지제", "행신", "향남", "옥수", "덕소", "용문", "지평"
+        ),
+        "강원권" to listOf(
+            "강릉", "강촌", "고한", "나전", "남춘천", "동백산", "동해", "둔내", "묵호", "민둥산", "백양리", "사북", "삼척", "삼척해변",
+            "서원주", "석포", "승부", "아우라지", "양동", "양원", "영월", "예미", "원주", "정동진", "정선", "제천", "진부(오대산)",
+            "춘양", "춘천", "충주", "태백", "평창", "횡성", "만종", "도계", "쌍룡", "분천", "비동", "철암", "근덕", "신기", "추암"
+        ),
+        "충청권" to listOf(
+            "각계", "강경", "계룡", "공주", "논산", "대전", "대천", "도고온천", "부강", "삼탄", "삽교", "서대전", "서천", "신례원", "신탄진",
+            "심천", "아산", "연산", "영동", "오근장", "오송", "옥산", "옥천", "온양온천", "전의", "조치원", "증평", "지탄", "천안", "천안아산",
+            "청주", "청주공항", "충주", "추풍령", "홍성", "황간", "성환", "청도"
+        ),
+        "전라권" to listOf(
+            "강진", "광주", "광주송정", "극락강", "군산", "김제", "곡성", "광양", "구례구", "나주", "능주", "다시", "대야", "득량", "목포",
+            "몽탄", "무안", "문평", "벌교", "보성", "백양사", "서광주", "선평", "삼례", "순천", "신보성", "신태인", "여수EXPO", "여천", "영암",
+            "오수", "익산", "임성리", "임실", "장성", "장항", "장흥", "전남장흥", "전주", "정읍", "조성", "진상", "함열", "함평", "효천", "화순"
+        ),
+        "경상권" to listOf(
+            "강구", "경산", "경주", "고래불", "구미", "구포", "군위", "기장", "김천", "남성현", "남창", "대구", "대곡", "동대구", "마산", "매화",
+            "밀양", "물금", "부산", "부전", "북영천", "북울산", "삼랑진", "사상", "상동", "상주", "서경주", "센텀", "신동", "신해운대", "안강",
+            "아화", "약목", "영덕", "영천", "영해", "옥산", "왜관", "용궁", "울산(통도사)", "울진", "웅천", "원동", "의성", "예천", "영주", "봉화",
+            "점촌", "진례", "진영", "진주", "창원", "창원중앙", "청도", "청리", "태화강", "포항", "풍기", "하양", "한림정", "함안", "함창", "화명", "후포"
+        )
+    )
+
+    private val regionHeaderPrefix = "\u0000"
     private val stationAdapters = mutableListOf<ArrayAdapter<String>>()
 
     private val statusReceiver = object : BroadcastReceiver() {
@@ -223,24 +260,46 @@ class MainActivity : ComponentActivity() {
         return Pair(wrapper, input)
     }
 
+    private fun stationRegionsForRailway(): List<Pair<String, List<String>>> {
+        val allStations = stationNamesForRailway().toSet()
+        val source = if (::railway.isInitialized && railway.text.toString() == "KORAIL") {
+            korailStationRegions.toList()
+        } else {
+            srtStationRegions.toList()
+        }
+        val grouped = source.map { (region, stations) ->
+            region to stations.filter { it in allStations }
+        }.filter { it.second.isNotEmpty() }
+        val groupedNames = grouped.flatMap { it.second }.toSet()
+        val remaining = stationNamesForRailway().filterNot { it in groupedNames }
+        return if (remaining.isEmpty()) grouped else grouped + ("기타" to remaining)
+    }
+
+    private fun isRegionHeader(value: String): Boolean = value.startsWith(regionHeaderPrefix)
+
+    private fun stationDropdownItems(query: String = ""): List<String> {
+        val normalized = query.trim().lowercase(Locale.ROOT)
+        return stationRegionsForRailway().flatMap { (region, stations) ->
+            val matches = if (normalized.isEmpty()) {
+                stations
+            } else {
+                stations.filter { it.lowercase(Locale.ROOT).contains(normalized) }
+            }
+            if (matches.isEmpty()) emptyList() else listOf(regionHeaderPrefix + region) + matches
+        }
+    }
+
     private fun stationField(label: String): Pair<TextInputLayout, MaterialAutoCompleteTextView> {
         val adapter = object : ArrayAdapter<String>(
             this,
             android.R.layout.simple_dropdown_item_1line,
-            stationNamesForRailway().toMutableList()
+            stationDropdownItems().toMutableList()
         ) {
             private val stationFilter = object : Filter() {
                 override fun performFiltering(constraint: CharSequence?): FilterResults {
-                    val query = constraint?.toString()?.trim()?.lowercase(Locale.ROOT).orEmpty()
-                    val stations = stationNamesForRailway()
-                    val matches = if (query.isEmpty()) {
-                        stations
-                    } else {
-                        stations.filter { it.lowercase(Locale.ROOT).contains(query) }
-                    }
                     return FilterResults().apply {
-                        values = matches
-                        count = matches.size
+                        values = stationDropdownItems(constraint?.toString().orEmpty())
+                        count = (values as List<*>).size
                     }
                 }
 
@@ -254,10 +313,27 @@ class MainActivity : ComponentActivity() {
 
             override fun getFilter(): Filter = stationFilter
 
+            override fun isEnabled(position: Int): Boolean = !isRegionHeader(getItem(position).orEmpty())
+
             override fun getView(position: Int, convertView: View?, parent: ViewGroup): View =
                 super.getView(position, convertView, parent).apply {
-                    setPadding(dp(16), dp(12), dp(16), dp(12))
-                    (this as? TextView)?.textSize = 15f
+                    val item = getItem(position).orEmpty()
+                    if (isRegionHeader(item)) {
+                        setPadding(dp(16), dp(14), dp(16), dp(6))
+                        (this as? TextView)?.apply {
+                            text = item.removePrefix(regionHeaderPrefix)
+                            textSize = 13f
+                            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                            setTextColor(color(R.color.srt_primary))
+                        }
+                    } else {
+                        setPadding(dp(16), dp(10), dp(16), dp(10))
+                        (this as? TextView)?.apply {
+                            textSize = 15f
+                            typeface = Typeface.DEFAULT
+                            setTextColor(color(R.color.srt_on_surface))
+                        }
+                    }
                 }
         }
         stationAdapters += adapter
@@ -303,7 +379,7 @@ class MainActivity : ComponentActivity() {
         val stations = stationNamesForRailway()
         stationAdapters.forEach { adapter ->
             adapter.clear()
-            adapter.addAll(stations)
+            adapter.addAll(stationDropdownItems())
             adapter.notifyDataSetChanged()
         }
         if (::dep.isInitialized && dep.text.toString() !in stations) dep.setText("")
