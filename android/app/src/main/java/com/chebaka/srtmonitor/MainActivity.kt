@@ -72,12 +72,26 @@ class MainActivity : ComponentActivity() {
 
     private val railwayOptions = listOf("SRT", "KORAIL")
 
-    private val stationNames = listOf(
+    private val srtStationNames = listOf(
         "수서", "동탄", "평택지제", "곡성", "공주", "광주송정", "구례구", "김천(구미)",
         "나주", "남원", "대전", "동대구", "마산", "목포", "밀양", "부산", "서대구", "순천",
         "신경주", "경주", "여수EXPO", "여천", "오송", "울산(통도사)", "익산", "전주",
         "정읍", "진영", "진주", "창원", "창원중앙", "천안아산", "포항"
     )
+
+    private val korailStationNames = listOf(
+        "행신", "서울", "용산", "영등포", "광명", "수원", "천안", "천안아산", "오송", "대전", "서대전",
+        "김천", "김천(구미)", "구미", "동대구", "경산", "밀양", "구포", "부산", "신경주", "울산(통도사)", "포항",
+        "공주", "익산", "정읍", "광주송정", "나주", "목포", "전주", "남원", "곡성", "구례구", "순천", "여천", "여수EXPO",
+        "마산", "창원", "창원중앙", "진영", "진주", "함안", "군북", "반성", "하동", "광양",
+        "청량리", "상봉", "덕소", "양평", "용문", "지평", "석불", "일신", "매곡", "양동", "삼산",
+        "서원주", "원주", "만종", "횡성", "둔내", "평창", "진부", "강릉", "제천", "단양", "영주", "안동",
+        "충주", "청주", "오근장", "증평", "음성", "주덕", "영월", "민둥산", "사북", "고한", "태백", "도계", "동해", "묵호", "정동진",
+        "부전", "센텀", "신해운대", "기장", "남창", "태화강", "경주", "서경주", "대천", "홍성", "광천", "예산", "신례원", "온양온천", "신창", "서천", "장항", "군산",
+        "상주", "함창", "점촌", "용궁", "예천", "봉화", "춘양", "승부", "석포", "철암"
+    )
+
+    private val stationAdapters = mutableListOf<ArrayAdapter<String>>()
 
     private val statusReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -183,47 +197,50 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun stationField(label: String): Pair<TextInputLayout, MaterialAutoCompleteTextView> {
+        val adapter = object : ArrayAdapter<String>(
+            this,
+            android.R.layout.simple_dropdown_item_1line,
+            stationNamesForRailway().toMutableList()
+        ) {
+            private val stationFilter = object : Filter() {
+                override fun performFiltering(constraint: CharSequence?): FilterResults {
+                    val query = constraint?.toString()?.trim()?.lowercase(Locale.ROOT).orEmpty()
+                    val stations = stationNamesForRailway()
+                    val matches = if (query.isEmpty()) {
+                        stations
+                    } else {
+                        stations.filter { it.lowercase(Locale.ROOT).contains(query) }
+                    }
+                    return FilterResults().apply {
+                        values = matches
+                        count = matches.size
+                    }
+                }
+
+                override fun publishResults(constraint: CharSequence?, results: FilterResults?) {
+                    clear()
+                    @Suppress("UNCHECKED_CAST")
+                    addAll((results?.values as? List<String>).orEmpty())
+                    notifyDataSetChanged()
+                }
+            }
+
+            override fun getFilter(): Filter = stationFilter
+
+            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View =
+                super.getView(position, convertView, parent).apply {
+                    setPadding(dp(16), dp(12), dp(16), dp(12))
+                    (this as? TextView)?.textSize = 15f
+                }
+        }
+        stationAdapters += adapter
         val input = MaterialAutoCompleteTextView(this).apply {
             textSize = 16f
             includeFontPadding = false
             threshold = 0
             inputType = InputType.TYPE_CLASS_TEXT
             setTextColor(color(R.color.srt_on_surface))
-            setAdapter(object : ArrayAdapter<String>(
-                this@MainActivity,
-                android.R.layout.simple_dropdown_item_1line,
-                stationNames.toMutableList()
-            ) {
-                private val stationFilter = object : Filter() {
-                    override fun performFiltering(constraint: CharSequence?): FilterResults {
-                        val query = constraint?.toString()?.trim()?.lowercase(Locale.ROOT).orEmpty()
-                        val matches = if (query.isEmpty()) {
-                            stationNames
-                        } else {
-                            stationNames.filter { it.lowercase(Locale.ROOT).contains(query) }
-                        }
-                        return FilterResults().apply {
-                            values = matches
-                            count = matches.size
-                        }
-                    }
-
-                    override fun publishResults(constraint: CharSequence?, results: FilterResults?) {
-                        clear()
-                        @Suppress("UNCHECKED_CAST")
-                        addAll((results?.values as? List<String>).orEmpty())
-                        notifyDataSetChanged()
-                    }
-                }
-
-                override fun getFilter(): Filter = stationFilter
-
-                override fun getView(position: Int, convertView: View?, parent: ViewGroup): View =
-                    super.getView(position, convertView, parent).apply {
-                        setPadding(dp(16), dp(12), dp(16), dp(12))
-                        (this as? TextView)?.textSize = 15f
-                    }
-            })
+            setAdapter(adapter)
             setOnFocusChangeListener { _, focused -> if (focused) showDropDown() }
             setOnClickListener { showDropDown() }
             setOnItemClickListener { _, _, _, _ -> dismissDropDown() }
@@ -238,6 +255,21 @@ class MainActivity : ComponentActivity() {
             addView(input)
         }
         return wrapper to input
+    }
+
+    private fun stationNamesForRailway(): List<String> =
+        if (::railway.isInitialized && railway.text.toString() == "KORAIL") korailStationNames else srtStationNames
+
+    private fun refreshStationOptions() {
+        val stations = stationNamesForRailway()
+        stationAdapters.forEach { adapter ->
+            adapter.clear()
+            adapter.addAll(stations)
+            adapter.notifyDataSetChanged()
+        }
+        if (::dep.isInitialized && dep.text.toString() !in stations) dep.setText("")
+        if (::arr.isInitialized && arr.text.toString() !in stations) arr.setText("")
+        if (::routeFromLabel.isInitialized) updateRoutePreview()
     }
 
     private fun choiceField(label: String, options: List<String>): Pair<TextInputLayout, MaterialAutoCompleteTextView> {
@@ -266,6 +298,7 @@ class MainActivity : ComponentActivity() {
 
     private fun updateRailwayCapabilities() {
         val isKorail = ::railway.isInitialized && railway.text.toString() == "KORAIL"
+        refreshStationOptions()
         if (::windowSeat.isInitialized) {
             windowSeat.isEnabled = !isKorail
             if (isKorail) windowSeat.isChecked = false

@@ -11,7 +11,7 @@
 - 기준선: `main` 브랜치
 - 구현 브랜치: `feature/korail-monitor`
 - 초기 구현 커밋: `beb2452 feat(rail): add KORAIL monitoring path`
-- 현재 변경: KORAIL 열차 종류 선택 제거 및 전체 열차 조회 전환
+- 현재 구현: KORAIL 열차 종류 선택 제거, 전체 열차 조회, 운영사별 역 목록 분리
 - 기준선 보존 원칙: SRT 기존 엔진을 직접 교체하지 않고 서비스에서 엔진을 분기한다.
 
 ## 현재 구조
@@ -30,6 +30,7 @@
   - Android Keystore AES-GCM 암호화 유지
 - `MainActivity.kt`
   - 운영사 선택만 제공하며 KORAIL 열차 종류 선택은 제공하지 않음
+  - SRT와 KORAIL 선택에 따라 출발역·도착역 목록을 교체
   - 출발역·도착역·날짜·시간으로 KORAIL 전체 열차 조회
   - KORAIL 선택 시 자동결제·창가 우선 비활성화
 
@@ -59,6 +60,7 @@
 - KORAIL 설정 검증·전체 열차 조회 경로·자동결제 차단 self-check 통과
 - `android/gradlew.bat assembleDebug` 통과
 - KORAIL 전체 열차 조회 self-check 통과: 검색 호출에 `train_type` 필터 없음
+- KORAIL 선택 시 전용 역 목록으로 교체되는 UI 경로 반영
 - x86_64 ABI 포함 재빌드 통과: `arm64-v8a`, `x86_64`
 - APK: `android/app/build/outputs/apk/debug/app-debug.apk`
 - x86_64 AVD에 APK 재설치 성공 및 `MainActivity` 실행 확인
