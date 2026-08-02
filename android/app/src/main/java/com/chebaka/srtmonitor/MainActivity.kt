@@ -738,13 +738,13 @@ class MainActivity : ComponentActivity() {
                 setOnCheckedChangeListener { _, _ -> updatePaymentVisibility() }
             }
             addView(autoPay)
-            addView(text("SRT만 자동결제 지원. KORAIL은 예약 후 공식 결제 화면 알림을 제공해.", 12f, R.color.srt_secondary).apply {
+            addView(text("SRT만 자동결제 지원. KORAIL은 예약 후 공식 결제 화면 알림을 제공해. 스위치를 켜야 카드정보를 결제에 사용해.", 12f, R.color.srt_secondary).apply {
                 setPadding(0, dp(3), 0, 0)
             })
 
             paymentFields = LinearLayout(this@MainActivity).apply {
                 orientation = LinearLayout.VERTICAL
-                visibility = View.GONE
+                visibility = View.VISIBLE
             }
             val number = field("카드번호", password = true, number = true)
             cardNumber = number.second
@@ -836,7 +836,9 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun updatePaymentVisibility() {
-        if (::paymentFields.isInitialized) paymentFields.visibility = if (autoPay.isChecked) View.VISIBLE else View.GONE
+        if (::paymentFields.isInitialized) {
+            paymentFields.visibility = if (selectedRailway == "KORAIL") View.GONE else View.VISIBLE
+        }
     }
 
     private fun renderStatus(message: String) {
