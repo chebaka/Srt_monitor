@@ -101,16 +101,17 @@ def _safe_error(error, config):
     return message[:180]
 
 
-def _ticket_matches_config(ticket, config):
+def _ticket_matches_config(ticket, config, train_no=""):
     return (
         ticket.dep_date == config["date"]
         and ticket.dep_name == config["dep"]
         and ticket.arr_name == config["arr"]
         and config["timeFrom"] <= ticket.dep_time <= config["timeTo"]
+        and (not train_no or ticket.train_no == train_no)
     )
 
 
-def verify_payment_json(config_json, callback):
+def verify_payment_json(config_json, callback, train_no=""):
     """Verify that the reserved route has become a paid KORAIL ticket."""
     try:
         config = json.loads(config_json)
@@ -119,7 +120,7 @@ def verify_payment_json(config_json, callback):
         _validate_config(config)
         client = _login(config)
         tickets = client.tickets()
-        if any(_ticket_matches_config(ticket, config) for ticket in tickets):
+        if any(_ticket_matches_config(ticket, config, str(train_no).strip()) for ticket in tickets):
             _emit(callback, "KORAIL|결제 확인 완료|발권 목록에서 확인됨")
         else:
             _emit(callback, "KORAIL|결제 미확인|공식 결제 화면에서 상태를 확인해")
@@ -215,7 +216,7 @@ def run_monitor_json(config_json, callback):
             reservation = _reserve(client, candidate, config)
             _emit(
                 callback,
-                f"KORAIL|예약 완료|결제 필요|예약번호 {reservation.rsv_id}|결제기한 {reservation.buy_limit_date} {reservation.buy_limit_time}",
+                f"KORAIL|예약 완료|결제 필요|예약번호 {reservation.rsv_id}|열차번호 {candidate.train_no}|결제기한 {reservation.buy_limit_date} {reservation.buy_limit_time}",
             )
             return
         except Exception as error:

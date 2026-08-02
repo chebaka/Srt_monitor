@@ -28,7 +28,9 @@ class MonitorService : Service() {
         if (intent?.action == ACTION_VERIFY_KORAIL_PAYMENT) {
             if (!running) {
                 running = true
-                executor.execute { verifyKorailPayment() }
+                executor.execute {
+                    verifyKorailPayment(intent.getStringExtra(EXTRA_KORAIL_TRAIN_NO).orEmpty())
+                }
             }
             return START_NOT_STICKY
         }
@@ -76,7 +78,7 @@ class MonitorService : Service() {
         }
     }
 
-    private fun verifyKorailPayment() {
+    private fun verifyKorailPayment(trainNo: String) {
         try {
             if (!Python.isStarted()) Python.start(AndroidPlatform(this))
             val store = ProfileStore(this)
@@ -84,7 +86,7 @@ class MonitorService : Service() {
             val config = store.load(profile) ?: error("저장된 프로필이 없어")
             val callback = StatusProxy { message -> update(message) }
             Python.getInstance().getModule("korail_engine")
-                .callAttr("verify_payment_json", config.toJson(), callback)
+                .callAttr("verify_payment_json", config.toJson(), callback, trainNo)
         } catch (e: Exception) {
             update("KORAIL|결제 확인 실패|${e::class.simpleName ?: "오류"}")
         } finally {
@@ -109,6 +111,7 @@ class MonitorService : Service() {
             builder.addAction(R.drawable.ic_stat_srt, "공식 웹 결제 열기", webPendingIntent)
             val verifyIntent = Intent(this, MonitorService::class.java).apply {
                 action = ACTION_VERIFY_KORAIL_PAYMENT
+                putExtra(EXTRA_KORAIL_TRAIN_NO, fieldValue(text, "열차번호 "))
             }
             builder.addAction(
                 R.drawable.ic_stat_srt,
@@ -130,6 +133,9 @@ class MonitorService : Service() {
         }
         return builder.build()
     }
+
+    private fun fieldValue(text: String, prefix: String): String =
+        text.split('|').firstOrNull { it.startsWith(prefix) }?.removePrefix(prefix)?.trim().orEmpty()
 
     private fun activityPendingIntent(intent: Intent, requestCode: Int): PendingIntent =
         PendingIntent.getActivity(
@@ -161,6 +167,7 @@ class MonitorService : Service() {
         const val ACTION_STOP = "com.chebaka.srtmonitor.STOP"
         const val ACTION_VERIFY_KORAIL_PAYMENT = "com.chebaka.srtmonitor.VERIFY_KORAIL_PAYMENT"
         const val EXTRA_STATUS = "status"
+        const val EXTRA_KORAIL_TRAIN_NO = "korail_train_no"
         const val CHANNEL_ID = "srt_monitor"
         const val NOTIFICATION_ID = 1001
         const val RESULT_NOTIFICATION_ID = 1002
