@@ -729,7 +729,7 @@ class MainActivity : ComponentActivity() {
                 setOnCheckedChangeListener { _, _ -> updatePaymentVisibility() }
             }
             addView(autoPay)
-            addView(text("SRT에서만 지원. KORAIL 자동결제는 검증 전 차단돼.", 12f, R.color.srt_secondary).apply {
+            addView(text("SRT만 자동결제 지원. KORAIL은 예약 후 공식 결제 화면 알림을 제공해.", 12f, R.color.srt_secondary).apply {
                 setPadding(0, dp(3), 0, 0)
             })
 

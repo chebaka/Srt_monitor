@@ -21,10 +21,12 @@
 - `android/app/src/main/python/korail_engine.py`
   - KORAIL 로그인·조회·좌석 필터·예약 경로
   - 조회는 역명을 API에 전달하고, 역코드는 프로필 및 기존 예약 식별값으로 검증
+  - `search_train_allday`로 시간대 전체를 페이지 조회하며 열차 종류 필터를 전달하지 않음
   - 예약 완료 후 결제 필요 상태로 종료
   - 자동결제와 KORAIL 창가 우선은 입력 단계에서 차단
 - `MonitorService.kt`
   - 프로필의 `operator`가 `KORAIL`이면 `korail_engine`, 그 외에는 `srt_engine` 호출
+  - KORAIL 예약 완료 알림에 공식 KORAIL 결제 화면 열기 액션 제공
 - `ProfileStore.kt`
   - 기존 프로필과 호환되도록 `operator` 기본값 `SRT` 유지
   - 기존 저장 JSON의 `trainType` 값은 무시
@@ -58,6 +60,8 @@
 - Chaquopy에서 `install("korail2==0.4.0")`는 버전 검색 실패
 - 따라서 `build.gradle.kts`에 PyPI 소스 아카이브 URL을 고정해 설치
 - `korail2`는 조회·예약을 제공하지만 결제 API는 제공하지 않으므로 자동결제 구현에 사용하지 않는다.
+- pinned `korail2==0.4.0` 소스에도 `search_train_allday`는 있으나 결제 메서드는 없고, upstream 문서의 Todo에도 결제 API 구현이 남아 있다.
+- KORAIL 공식 안내는 예약 후 코레일톡 또는 레츠코레일의 결제 화면에서 결제하도록 안내하므로, 임의의 카드 POST 대신 공식 화면으로 handoff한다.
 
 참고:
 
@@ -72,6 +76,7 @@
 - KORAIL 설정 검증·전체 열차 조회 경로·자동결제 차단 self-check 통과
 - `android/gradlew.bat assembleDebug` 통과
 - KORAIL 전체 열차 조회 self-check 통과: 검색 호출에 `train_type` 필터 없음
+- KORAIL 전체 시간대 조회 self-check 통과: `search_train_allday` 호출에 `train_type` 필터 없음
 - KORAIL 선택 시 전용 역 목록으로 교체되는 UI 경로 반영
 - x86_64 ABI 포함 재빌드 통과: `arm64-v8a`, `x86_64`
 - APK: `android/app/build/outputs/apk/debug/app-debug.apk`
@@ -80,6 +85,7 @@
 - 에뮬레이터에서 SRT·KORAIL 역 입력 `EXPO` → `여수EXPO` 필터 결과 선택 확인
 - 에뮬레이터에서 KORAIL 창가 우선·자동결제 비활성화 확인
 - 에뮬레이터에서 출발역 즐겨찾기 별표 토글 확인
+- KORAIL 결제 필요 알림에 공식 결제 화면 액션을 붙이는 코드 경로 반영
 - 공식 stationdata 응답 281개·역코드 형식 확인
 - `git diff --check` 통과
 
@@ -105,6 +111,7 @@
 - 비밀번호·카드번호·카드 비밀번호·인증번호를 이 파일이나 Git에 기록하지 않는다.
 - 실제 예약은 좌석을 발견하면 발생할 수 있으므로 테스트 전 자동결제는 꺼둔다.
 - KORAIL 결제 호출을 추가하지 않는다.
+- KORAIL 예약 완료 후에는 공식 결제 화면만 열고, 카드정보를 비공식 API로 전송하지 않는다.
 - 실예약·결제·Git push는 실행 직전 확인한다.
 - 기존 예약 조회 실패를 신규 예약 가능으로 간주하지 않는다.
 

@@ -2,8 +2,10 @@ package com.chebaka.srtmonitor
 
 import android.app.Notification
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
+import android.net.Uri
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.chaquo.python.Python
@@ -67,11 +69,24 @@ class MonitorService : Service() {
         }
     }
 
-    private fun notification(text: String): Notification = NotificationCompat.Builder(this, CHANNEL_ID)
-        .setSmallIcon(R.drawable.ic_stat_srt).setContentTitle("Rail Watch")
-        .setContentText(text.take(180)).setStyle(NotificationCompat.BigTextStyle().bigText(text))
-        .setOngoing(!isFinished(text))
-        .setPriority(NotificationCompat.PRIORITY_HIGH).build()
+    private fun notification(text: String): Notification {
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_stat_srt).setContentTitle("Rail Watch")
+            .setContentText(text.take(180)).setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setOngoing(!isFinished(text))
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+        if (text.startsWith(KORAIL_PAYMENT_REQUIRED_PREFIX)) {
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(KORAIL_PAYMENT_URL))
+            val pendingIntent = PendingIntent.getActivity(
+                this,
+                KORAIL_PAYMENT_REQUEST_CODE,
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            builder.addAction(R.drawable.ic_stat_srt, "공식 결제 열기", pendingIntent)
+        }
+        return builder.build()
+    }
 
     private fun isFinished(message: String): Boolean =
         message.startsWith("✅ 예약 성공:") ||
@@ -96,5 +111,8 @@ class MonitorService : Service() {
         const val CHANNEL_ID = "srt_monitor"
         const val NOTIFICATION_ID = 1001
         const val RESULT_NOTIFICATION_ID = 1002
+        private const val KORAIL_PAYMENT_REQUIRED_PREFIX = "KORAIL|예약 완료|결제 필요"
+        private const val KORAIL_PAYMENT_URL = "https://www.korail.com/ticket/payment/payment"
+        private const val KORAIL_PAYMENT_REQUEST_CODE = 2001
     }
 }

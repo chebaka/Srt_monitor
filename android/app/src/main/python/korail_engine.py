@@ -62,7 +62,7 @@ def _existing_reservation(client, config):
 def _find_candidate(client, config):
     passengers = [AdultPassenger(count=config["passengers"])]
     try:
-        trains = client.search_train(
+        trains = client.search_train_allday(
             config["dep"],
             config["arr"],
             config["date"],

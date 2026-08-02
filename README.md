@@ -5,7 +5,8 @@ Android app project for the SRT and KORAIL reservation monitor.
 ## Current scope
 
 - Native Android UI for SRT/KORAIL account and trip conditions
-- KTX, ITX, Saemaeul, and Mugunghwa train type selection
+- Route-based KORAIL search covering all available train types (KTX, ITX, Saemaeul, Mugunghwa, etc.) without a train-type selector
+- Official KORAIL station data with cache/fallback, regional grouping, live search, recents, and favorites
 - Android Keystore AES-GCM encrypted profile storage
 - Foreground Service and Android notification channel
 - Chaquopy integration point for the verified Python SRT engine
@@ -33,10 +34,10 @@ android/app/build/outputs/apk/debug/app-debug.apk
 
 ## Important status
 
-The Android shell, encrypted multi-profile storage, foreground service, UI, and Python bridge are present. `srt_engine.py` handles SRT; `korail_engine.py` handles KORAIL monitoring and reservation. KORAIL automatic payment is intentionally disabled because the selected client does not provide a verified payment API. Live SRT/KORAIL login and reservation still need real-device verification before production use.
+The Android shell, encrypted multi-profile storage, foreground service, UI, and Python bridge are present. `srt_engine.py` handles SRT; `korail_engine.py` handles route-based KORAIL monitoring and reservation across train types. After a KORAIL reservation, the app offers the official KORAIL payment page from the result notification. KORAIL automatic card payment is intentionally disabled because the selected client does not provide a verified payment API. Live SRT/KORAIL login and reservation still need real-device verification before production use.
 
 ## Security
 
 - Do not commit `.env`, card files, passwords, tokens, or logs.
 - Release signing keys must be kept outside the repository.
-- Automatic payment is high risk. It remains available only on the existing SRT path and must stay off until reservation and post-payment verification pass on the target device.
+- Automatic payment is high risk. It remains available only on the existing SRT path; KORAIL uses an official payment-page handoff and never sends card data to an unofficial endpoint.
