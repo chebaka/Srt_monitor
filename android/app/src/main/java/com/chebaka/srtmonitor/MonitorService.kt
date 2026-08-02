@@ -14,6 +14,7 @@ import java.util.concurrent.Executors
 
 class MonitorService : Service() {
     private val executor = Executors.newSingleThreadExecutor()
+    private val controlExecutor = Executors.newSingleThreadExecutor()
     private var running = false
 
     override fun onCreate() {
@@ -31,6 +32,8 @@ class MonitorService : Service() {
                 executor.execute {
                     verifyKorailPayment(intent.getStringExtra(EXTRA_KORAIL_TRAIN_NO).orEmpty())
                 }
+            } else {
+                controlExecutor.execute { requestKorailPaymentCheck() }
             }
             return START_NOT_STICKY
         }
@@ -93,6 +96,13 @@ class MonitorService : Service() {
         } finally {
             running = false
         }
+    }
+
+    private fun requestKorailPaymentCheck() {
+        if (!Python.isStarted()) return
+        try {
+            Python.getInstance().getModule("korail_engine").callAttr("request_payment_check")
+        } catch (_: Exception) { }
     }
 
     private fun notification(text: String): Notification {
@@ -168,7 +178,12 @@ class MonitorService : Service() {
             message.startsWith("KORAIL|입력 확인 실패") ||
             message.startsWith("KORAIL|연속 오류")
 
-    override fun onDestroy() { stopEngine(); executor.shutdownNow(); super.onDestroy() }
+    override fun onDestroy() {
+        stopEngine()
+        executor.shutdownNow()
+        controlExecutor.shutdownNow()
+        super.onDestroy()
+    }
     override fun onBind(intent: Intent?): IBinder? = null
 
     companion object {

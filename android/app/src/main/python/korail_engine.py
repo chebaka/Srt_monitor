@@ -14,11 +14,18 @@ from korail2 import AdultPassenger, Korail, NoResultsError, ReserveOption
 
 
 _stop = threading.Event()
+_payment_check = threading.Event()
 _PAYMENT_POLL_SECONDS = 60
 _MAX_PAYMENT_ERRORS = 5
 
 def stop_monitor():
     _stop.set()
+    _payment_check.set()
+
+
+def request_payment_check():
+    """Wake an active payment monitor for an immediate ticket refresh."""
+    _payment_check.set()
 
 
 def _emit(callback, message):
@@ -93,6 +100,17 @@ def _reserve(client, train, config):
 
 def _wait(seconds):
     return _stop.wait(seconds)
+
+
+def _wait_payment_interval(seconds):
+    if _stop.is_set():
+        return True
+    triggered = _payment_check.wait(seconds)
+    if _stop.is_set():
+        return True
+    if triggered:
+        _payment_check.clear()
+    return False
 
 
 def _safe_error(error, config):
@@ -171,7 +189,7 @@ def _wait_for_payment(client, config, reservation, train_no, callback):
                 _emit(callback, f"KORAIL|결제 확인 중단|열차번호 {train_no}|연속 오류 {_MAX_PAYMENT_ERRORS}회|{detail}")
                 return
             _emit(callback, f"KORAIL|결제 확인 오류|열차번호 {train_no}|재시도 {consecutive_errors}/{_MAX_PAYMENT_ERRORS}|{detail}")
-        if _wait(min(_PAYMENT_POLL_SECONDS, max(1, int(remaining)))):
+        if _wait_payment_interval(min(_PAYMENT_POLL_SECONDS, max(1, int(remaining)))):
             return
 
 
@@ -233,6 +251,7 @@ def run_monitor_json(config_json, callback):
         return
 
     _stop.clear()
+    _payment_check.clear()
     consecutive_errors = 0
     poll_min = max(30, int(config.get("pollMin", 30)))
     poll_max = max(poll_min, int(config.get("pollMax", 60)))
