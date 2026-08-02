@@ -25,6 +25,13 @@ class MonitorService : Service() {
         if (intent?.action == ACTION_STOP) {
             stopEngine(); stopSelf(); return START_NOT_STICKY
         }
+        if (intent?.action == ACTION_VERIFY_KORAIL_PAYMENT) {
+            if (!running) {
+                running = true
+                executor.execute { verifyKorailPayment() }
+            }
+            return START_NOT_STICKY
+        }
         if (!running) {
             running = true
             executor.execute { runEngine() }
@@ -69,24 +76,68 @@ class MonitorService : Service() {
         }
     }
 
+    private fun verifyKorailPayment() {
+        try {
+            if (!Python.isStarted()) Python.start(AndroidPlatform(this))
+            val store = ProfileStore(this)
+            val profile = store.activeProfile() ?: error("활성 프로필이 없어")
+            val config = store.load(profile) ?: error("저장된 프로필이 없어")
+            val callback = StatusProxy { message -> update(message) }
+            Python.getInstance().getModule("korail_engine")
+                .callAttr("verify_payment_json", config.toJson(), callback)
+        } catch (e: Exception) {
+            update("KORAIL|결제 확인 실패|${e::class.simpleName ?: "오류"}")
+        } finally {
+            running = false
+        }
+    }
+
     private fun notification(text: String): Notification {
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_srt).setContentTitle("Rail Watch")
             .setContentText(text.take(180)).setStyle(NotificationCompat.BigTextStyle().bigText(text))
             .setOngoing(!isFinished(text))
+            .setAutoCancel(isFinished(text))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
         if (text.startsWith(KORAIL_PAYMENT_REQUIRED_PREFIX)) {
-            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(KORAIL_PAYMENT_URL))
-            val pendingIntent = PendingIntent.getActivity(
-                this,
-                KORAIL_PAYMENT_REQUEST_CODE,
-                intent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            val webIntent = Intent(Intent.ACTION_VIEW, Uri.parse(KORAIL_PAYMENT_URL))
+            val webPendingIntent = activityPendingIntent(webIntent, KORAIL_PAYMENT_REQUEST_CODE)
+            val korailTalkIntent = packageManager.getLaunchIntentForPackage(KORAIL_TALK_PACKAGE)
+            builder.setContentIntent(korailTalkIntent?.let {
+                activityPendingIntent(it, KORAIL_TALK_REQUEST_CODE)
+            } ?: webPendingIntent)
+            builder.addAction(R.drawable.ic_stat_srt, "공식 웹 결제 열기", webPendingIntent)
+            val verifyIntent = Intent(this, MonitorService::class.java).apply {
+                action = ACTION_VERIFY_KORAIL_PAYMENT
+            }
+            builder.addAction(
+                R.drawable.ic_stat_srt,
+                "결제 확인",
+                PendingIntent.getForegroundService(
+                    this,
+                    KORAIL_VERIFY_REQUEST_CODE,
+                    verifyIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
             )
-            builder.addAction(R.drawable.ic_stat_srt, "공식 결제 열기", pendingIntent)
+            if (korailTalkIntent != null) {
+                builder.addAction(
+                    R.drawable.ic_stat_srt,
+                    "코레일톡 열기",
+                    activityPendingIntent(korailTalkIntent, KORAIL_TALK_REQUEST_CODE)
+                )
+            }
         }
         return builder.build()
     }
+
+    private fun activityPendingIntent(intent: Intent, requestCode: Int): PendingIntent =
+        PendingIntent.getActivity(
+            this,
+            requestCode,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
 
     private fun isFinished(message: String): Boolean =
         message.startsWith("✅ 예약 성공:") ||
@@ -98,6 +149,7 @@ class MonitorService : Service() {
             message.startsWith("🔴 모니터링 실패:") ||
             message.startsWith("KORAIL|예약 완료") ||
             message.startsWith("KORAIL|기존 예약 발견") ||
+            message.startsWith("KORAIL|결제 확인") ||
             message.startsWith("KORAIL|입력 확인 실패") ||
             message.startsWith("KORAIL|연속 오류")
 
@@ -107,12 +159,16 @@ class MonitorService : Service() {
     companion object {
         const val ACTION_STATUS = "com.chebaka.srtmonitor.STATUS"
         const val ACTION_STOP = "com.chebaka.srtmonitor.STOP"
+        const val ACTION_VERIFY_KORAIL_PAYMENT = "com.chebaka.srtmonitor.VERIFY_KORAIL_PAYMENT"
         const val EXTRA_STATUS = "status"
         const val CHANNEL_ID = "srt_monitor"
         const val NOTIFICATION_ID = 1001
         const val RESULT_NOTIFICATION_ID = 1002
         private const val KORAIL_PAYMENT_REQUIRED_PREFIX = "KORAIL|예약 완료|결제 필요"
         private const val KORAIL_PAYMENT_URL = "https://www.korail.com/ticket/payment/payment"
+        private const val KORAIL_TALK_PACKAGE = "com.korail.talk"
         private const val KORAIL_PAYMENT_REQUEST_CODE = 2001
+        private const val KORAIL_TALK_REQUEST_CODE = 2002
+        private const val KORAIL_VERIFY_REQUEST_CODE = 2003
     }
 }

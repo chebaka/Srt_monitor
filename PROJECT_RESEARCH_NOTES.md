@@ -23,10 +23,12 @@
   - 조회는 역명을 API에 전달하고, 역코드는 프로필 및 기존 예약 식별값으로 검증
   - `search_train_allday`로 시간대 전체를 페이지 조회하며 열차 종류 필터를 전달하지 않음
   - 예약 완료 후 결제 필요 상태로 종료
+  - 공식 결제 후 `tickets()`로 같은 구간의 발권 목록을 재조회하는 결제 확인 경로 제공
   - 자동결제와 KORAIL 창가 우선은 입력 단계에서 차단
 - `MonitorService.kt`
   - 프로필의 `operator`가 `KORAIL`이면 `korail_engine`, 그 외에는 `srt_engine` 호출
-  - KORAIL 예약 완료 알림에 공식 KORAIL 결제 화면 열기 액션 제공
+  - KORAIL 예약 완료 알림에서 설치된 코레일톡을 우선 열고, 공식 웹 결제 화면을 보조 액션으로 제공
+  - 예약 완료 알림에서 공식 결제 후 발권 상태 확인 액션 제공
 - `ProfileStore.kt`
   - 기존 프로필과 호환되도록 `operator` 기본값 `SRT` 유지
   - 기존 저장 JSON의 `trainType` 값은 무시
@@ -62,6 +64,7 @@
 - `korail2`는 조회·예약을 제공하지만 결제 API는 제공하지 않으므로 자동결제 구현에 사용하지 않는다.
 - pinned `korail2==0.4.0` 소스에도 `search_train_allday`는 있으나 결제 메서드는 없고, upstream 문서의 Todo에도 결제 API 구현이 남아 있다.
 - KORAIL 공식 안내는 예약 후 코레일톡 또는 레츠코레일의 결제 화면에서 결제하도록 안내하므로, 임의의 카드 POST 대신 공식 화면으로 handoff한다.
+- 코레일톡 Android 패키지는 `com.korail.talk`이며, 앱이 없을 때는 공식 웹 결제 URL로 fallback한다.
 
 참고:
 
@@ -86,6 +89,8 @@
 - 에뮬레이터에서 KORAIL 창가 우선·자동결제 비활성화 확인
 - 에뮬레이터에서 출발역 즐겨찾기 별표 토글 확인
 - KORAIL 결제 필요 알림에 공식 결제 화면 액션을 붙이는 코드 경로 반영
+- 코레일톡 설치 여부에 따른 공식 앱 우선·웹 fallback 결제 액션 반영
+- 공식 결제 후 KORAIL 발권 목록 재조회 self-check 경로 반영
 - 공식 stationdata 응답 281개·역코드 형식 확인
 - `git diff --check` 통과
 

@@ -4,6 +4,10 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
+    <queries>
+        <package android:name="com.korail.talk" />
+    </queries>
+
     <application
         android:allowBackup="false"
         android:label="Rail Watch"

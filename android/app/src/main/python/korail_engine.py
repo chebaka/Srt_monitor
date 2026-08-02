@@ -101,6 +101,33 @@ def _safe_error(error, config):
     return message[:180]
 
 
+def _ticket_matches_config(ticket, config):
+    return (
+        ticket.dep_date == config["date"]
+        and ticket.dep_name == config["dep"]
+        and ticket.arr_name == config["arr"]
+        and config["timeFrom"] <= ticket.dep_time <= config["timeTo"]
+    )
+
+
+def verify_payment_json(config_json, callback):
+    """Verify that the reserved route has become a paid KORAIL ticket."""
+    try:
+        config = json.loads(config_json)
+        if not isinstance(config, dict):
+            raise ValueError("잘못된 설정 형식이야")
+        _validate_config(config)
+        client = _login(config)
+        tickets = client.tickets()
+        if any(_ticket_matches_config(ticket, config) for ticket in tickets):
+            _emit(callback, "KORAIL|결제 확인 완료|발권 목록에서 확인됨")
+        else:
+            _emit(callback, "KORAIL|결제 미확인|공식 결제 화면에서 상태를 확인해")
+    except Exception as error:
+        safe_config = config if "config" in locals() and isinstance(config, dict) else {}
+        _emit(callback, f"KORAIL|결제 확인 실패|{_safe_error(error, safe_config)}")
+
+
 def _validate_config(config):
     if config.get("operator", "SRT") != "KORAIL":
         raise ValueError("KORAIL engine received a non-KORAIL profile")
