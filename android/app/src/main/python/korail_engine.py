@@ -222,7 +222,7 @@ def _validate_config(config):
 
 
 def run_monitor_json(config_json, callback):
-    """Monitor and reserve one KORAIL train, then return."""
+    """Monitor, reserve one KORAIL train, and observe its payment state."""
     try:
         config = json.loads(config_json)
         if not isinstance(config, dict):

@@ -45,7 +45,9 @@ class StationRepository(context: Context) {
             } catch (_: Exception) {
                 // Cached or bundled stations remain the safe fallback.
             }
-            if (!closed) mainHandler.post { onUpdated(latest) }
+            mainHandler.post {
+                if (!closed) onUpdated(latest)
+            }
         }
     }
 

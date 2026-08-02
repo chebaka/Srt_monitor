@@ -81,6 +81,10 @@ class MainActivity : ComponentActivity() {
         "정읍", "진영", "진주", "창원", "창원중앙", "천안아산", "포항"
     )
 
+    @Volatile
+    private var selectedRailway = "SRT"
+
+    @Volatile
     private var korailStationNames = StationRepository.fallbackStations.map { it.name }
 
     private val srtStationRegions = linkedMapOf(
@@ -237,7 +241,7 @@ class MainActivity : ComponentActivity() {
 
     private fun stationRegionsForRailway(excluded: Set<String> = emptySet()): List<Pair<String, List<String>>> {
         val allStations = stationNamesForRailway().filterNot { it in excluded }.toSet()
-        val source = if (::railway.isInitialized && railway.text.toString() == "KORAIL") {
+        val source = if (selectedRailway == "KORAIL") {
             korailStationRegions.toList()
         } else {
             srtStationRegions.toList()
@@ -252,8 +256,7 @@ class MainActivity : ComponentActivity() {
 
     private fun isRegionHeader(value: String): Boolean = value.startsWith(regionHeaderPrefix)
 
-    private fun railwayStationKey(): String =
-        if (::railway.isInitialized && railway.text.toString() == "KORAIL") "korail" else "srt"
+    private fun railwayStationKey(): String = if (selectedRailway == "KORAIL") "korail" else "srt"
 
     private fun stationPreferenceKey(kind: String): String = "${railwayStationKey()}_$kind"
 
@@ -437,10 +440,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun stationNamesForRailway(): List<String> =
-        if (::railway.isInitialized && railway.text.toString() == "KORAIL") korailStationNames else srtStationNames
+        if (selectedRailway == "KORAIL") korailStationNames else srtStationNames
 
     private fun stationCode(name: String): String =
-        if (::railway.isInitialized && railway.text.toString() == "KORAIL") {
+        if (selectedRailway == "KORAIL") {
             stationRepository.find(name)?.code.orEmpty()
         } else {
             ""
@@ -486,7 +489,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun updateRailwayCapabilities() {
-        val isKorail = ::railway.isInitialized && railway.text.toString() == "KORAIL"
+        selectedRailway = railway.text.toString().trim()
+        val isKorail = selectedRailway == "KORAIL"
         refreshStationOptions()
         if (::windowSeat.isInitialized) {
             windowSeat.isEnabled = !isKorail
@@ -650,7 +654,11 @@ class MainActivity : ComponentActivity() {
             val railwayField = choiceField("철도 운영사", railwayOptions)
             railway = railwayField.second
             railway.setText("SRT", false)
-            railway.setOnItemClickListener { _, _, _, _ -> updateRailwayCapabilities() }
+            selectedRailway = "SRT"
+            railway.setOnItemClickListener { _, _, _, _ ->
+                selectedRailway = railway.text.toString().trim()
+                updateRailwayCapabilities()
+            }
             addView(railwayField.first)
         })
 
@@ -852,6 +860,7 @@ class MainActivity : ComponentActivity() {
         store.setActiveProfile(name)
         profileName.setText(name)
         railway.setText(c.operator, false)
+        selectedRailway = c.operator
         srtId.setText(c.srtId); srtPassword.setText(c.srtPassword); dep.setText(c.dep); arr.setText(c.arr)
         date.setText(c.date); timeFrom.setText(c.timeFrom); timeTo.setText(c.timeTo); passengers.setText(c.passengers.toString())
         special.isChecked = c.special; windowSeat.isChecked = c.windowSeat; autoPay.isChecked = c.autoPay
