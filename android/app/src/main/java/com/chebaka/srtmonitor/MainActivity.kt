@@ -71,6 +71,12 @@ class MainActivity : ComponentActivity() {
     private lateinit var routeToLabel: TextView
     private lateinit var routeMeta: TextView
     private lateinit var railway: MaterialAutoCompleteTextView
+    private lateinit var accountInput: MaterialAutoCompleteTextView
+    private lateinit var dashboard: LinearLayout
+    private lateinit var activeCount: TextView
+    private var editingMonitorId: String = ""
+    private var selectedAccountId: String = ProfileStore.NEW_ACCOUNT_ID
+    private var receiverRegistered = false
 
     private val railwayOptions = listOf("SRT", "KORAIL")
 
@@ -133,6 +139,7 @@ class MainActivity : ComponentActivity() {
     private val statusReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             renderStatus(intent?.getStringExtra(MonitorService.EXTRA_STATUS) ?: "")
+            refreshDashboard()
         }
     }
 
@@ -143,18 +150,26 @@ class MainActivity : ComponentActivity() {
         stationRepository = StationRepository(this)
         createChannel()
         requestNotificationPermission()
-        buildUi()
-        loadSavedProfile()
+        try {
+            buildUi()
+            loadSavedProfile()
+        } catch (error: SecureStoreException) {
+            setContentView(text(error.message.orEmpty(), 16f, R.color.srt_on_surface).apply {
+                setPadding(dp(24), dp(32), dp(24), dp(24)); setBackgroundColor(color(R.color.srt_error_surface))
+            })
+            return
+        }
         stationRepository.refresh { stations ->
             korailStationNames = stations.map { it.name }
             refreshStationOptions()
         }
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(statusReceiver, IntentFilter(MonitorService.ACTION_STATUS), RECEIVER_NOT_EXPORTED)
         else registerReceiver(statusReceiver, IntentFilter(MonitorService.ACTION_STATUS))
+        receiverRegistered = true
     }
 
     override fun onDestroy() {
-        unregisterReceiver(statusReceiver)
+        if (receiverRegistered) unregisterReceiver(statusReceiver)
         stationRepository.close()
         super.onDestroy()
     }
@@ -647,6 +662,7 @@ class MainActivity : ComponentActivity() {
         })
         header.addView(headerCopy)
         content.addView(header)
+        content.addView(buildDashboard())
         content.addView(routePreview())
 
         content.addView(sectionCard("철도 선택", "SRT 또는 KORAIL을 선택해") {
@@ -674,12 +690,21 @@ class MainActivity : ComponentActivity() {
         })
 
         content.addView(sectionCard("철도 계정", "계정 정보는 기기 안에서 암호화해 저장") {
+            val accounts = store.accounts()
+            val labels = accounts.map(::accountLabel) + "새 계정 입력"
+            val accountField = choiceField("저장된 계정", labels)
+            accountInput = accountField.second
+            accountInput.setOnItemClickListener { _, _, position, _ ->
+                if (position < accounts.size) applyAccount(accounts[position]) else selectNewAccount()
+            }
+            addView(accountField.first)
             val id = field("회원번호·이메일·전화번호")
             srtId = id.second
             addView(id.first)
             val password = field("비밀번호", password = true)
             srtPassword = password.second
             addView(password.first)
+            if (accounts.isNotEmpty()) applyAccount(accounts.first()) else selectNewAccount()
         })
 
         content.addView(sectionCard("여행 조건", "역 이름을 정확히 입력해") {
@@ -758,6 +783,7 @@ class MainActivity : ComponentActivity() {
             cardValidation = validation.second
             paymentFields.addView(validation.first)
             addView(paymentFields)
+            store.accounts().firstOrNull { it.id == selectedAccountId }?.let(::applyAccount)
         })
 
         statusCard = MaterialCardView(this).apply {
@@ -783,15 +809,15 @@ class MainActivity : ComponentActivity() {
             orientation = LinearLayout.HORIZONTAL
             layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(16) }
         }
-        val save = secondaryButton("프로필 저장") { saveProfile() }
+        val save = secondaryButton("감시 저장") { saveProfile() }
         actions.addView(save, LinearLayout.LayoutParams(0, dp(54), 1f).apply { rightMargin = dp(5) })
         val start = primaryButton("모니터링 시작") { startMonitor() }
         actions.addView(start, LinearLayout.LayoutParams(0, dp(54), 1f).apply { leftMargin = dp(5) })
         content.addView(actions)
 
-        val stop = secondaryButton("중지") {
-            stopService(Intent(this@MainActivity, MonitorService::class.java))
-            renderStatus("중지됨")
+        val stop = secondaryButton("선택 감시 중지") {
+            if (editingMonitorId.isNotBlank()) sendServiceAction(MonitorService.ACTION_STOP_MONITOR, editingMonitorId)
+            renderStatus("중지 요청됨")
         }
         stop.layoutParams = LinearLayout.LayoutParams(-1, dp(50)).apply { topMargin = dp(8) }
         content.addView(stop)
@@ -804,6 +830,158 @@ class MainActivity : ComponentActivity() {
             clipToPadding = false
             addView(content)
         })
+        refreshDashboard()
+    }
+
+    private fun buildDashboard(): MaterialCardView = sectionCard("감시 대시보드", "저장 수 무제한 · 동시 최대 5개") {
+        activeCount = text("활성 0/${ProfileStore.MAX_ACTIVE}", 15f, R.color.srt_navy, true)
+        addView(activeCount)
+        val bulk = LinearLayout(this@MainActivity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) }
+        }
+        bulk.addView(secondaryButton("전체 시작") { confirmStartAll() }, LinearLayout.LayoutParams(0, dp(46), 1f).apply { rightMargin = dp(4) })
+        bulk.addView(secondaryButton("전체 중지") { sendServiceAction(MonitorService.ACTION_STOP_ALL) }, LinearLayout.LayoutParams(0, dp(46), 1f).apply { leftMargin = dp(4) })
+        addView(bulk)
+        val manage = LinearLayout(this@MainActivity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) }
+        }
+        manage.addView(secondaryButton("새 감시") { clearMonitorForm() }, LinearLayout.LayoutParams(0, dp(46), 1f).apply { rightMargin = dp(4) })
+        manage.addView(secondaryButton("계정 관리") { showAccounts() }, LinearLayout.LayoutParams(0, dp(46), 1f).apply { leftMargin = dp(4) })
+        addView(manage)
+        dashboard = LinearLayout(this@MainActivity).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) }
+        }
+        addView(dashboard)
+    }
+
+    private fun refreshDashboard() {
+        if (!::dashboard.isInitialized) return
+        val monitors = store.monitors()
+        activeCount.text = "활성 ${monitors.count { it.active }}/${ProfileStore.MAX_ACTIVE}"
+        dashboard.removeAllViews()
+        if (monitors.isEmpty()) {
+            dashboard.addView(text("저장된 감시 없음", 13f, R.color.srt_secondary))
+            return
+        }
+        val accounts = store.accounts().associateBy { it.id }
+        monitors.sortedBy { it.name }.forEach { monitor ->
+            val account = accounts[monitor.accountId]
+            val box = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(12), dp(10), dp(12), dp(10))
+                background = roundedBackground(color(R.color.srt_surface_soft), 10)
+                layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(7) }
+            }
+            val heading = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+            heading.addView(text(monitor.name, 15f, R.color.srt_on_surface, true), LinearLayout.LayoutParams(0, -2, 1f))
+            val toggle = MaterialSwitch(this).apply {
+                isChecked = monitor.active
+                contentDescription = "${monitor.name} 활성화"
+                setOnCheckedChangeListener { _, checked ->
+                    if (checked) confirmStart(monitor) else sendServiceAction(MonitorService.ACTION_STOP_MONITOR, monitor.id)
+                }
+            }
+            heading.addView(toggle)
+            box.addView(heading)
+            val statusText = store.lastStatus(monitor.id)?.second ?: if (monitor.active) "시작 대기" else "중지됨"
+            box.addView(text("${account?.operator ?: "?"} · ${monitor.dep} → ${monitor.arr} · ${monitor.date}\n$statusText", 12f, R.color.srt_secondary))
+            val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            actions.addView(secondaryButton("편집") { loadProfile(monitor.name) }, LinearLayout.LayoutParams(0, dp(42), 1f).apply { rightMargin = dp(4) })
+            actions.addView(secondaryButton("삭제") {
+                if (store.deleteMonitor(monitor.id)) refreshDashboard()
+                else AlertDialog.Builder(this@MainActivity).setMessage("활성 감시는 먼저 중지해").setPositiveButton("확인", null).show()
+            }, LinearLayout.LayoutParams(0, dp(42), 1f).apply { leftMargin = dp(4) })
+            box.addView(actions)
+            dashboard.addView(box)
+        }
+    }
+
+    private fun confirmStart(monitor: MonitorDefinition) {
+        if (store.overlaps(monitor)) {
+            AlertDialog.Builder(this).setTitle("중복 예약 가능성")
+                .setMessage("같은 계정의 날짜·노선·시간이 겹치는 감시가 실행 중이야. 계속할까?")
+                .setNegativeButton("취소") { _, _ -> refreshDashboard() }
+                .setPositiveButton("계속") { _, _ -> sendServiceAction(MonitorService.ACTION_START_MONITOR, monitor.id) }.show()
+        } else sendServiceAction(MonitorService.ACTION_START_MONITOR, monitor.id)
+    }
+
+    private fun confirmStartAll() {
+        val all = store.monitors()
+        val overlaps = all.indices.any { i -> (i + 1 until all.size).any { j ->
+            val a = all[i]; val b = all[j]
+            a.accountId == b.accountId && a.date == b.date && a.dep == b.dep && a.arr == b.arr &&
+                a.timeFrom <= b.timeTo && b.timeFrom <= a.timeTo
+        } }
+        if (overlaps) AlertDialog.Builder(this).setTitle("중복 예약 가능성")
+            .setMessage("겹치는 감시가 있어. 최대 5개를 계속 시작할까?")
+            .setNegativeButton("취소", null)
+            .setPositiveButton("계속") { _, _ -> sendServiceAction(MonitorService.ACTION_START_ALL) }.show()
+        else sendServiceAction(MonitorService.ACTION_START_ALL)
+    }
+
+    private fun sendServiceAction(action: String, monitorId: String = "") {
+        val intent = Intent(this, MonitorService::class.java).apply {
+            this.action = action
+            if (monitorId.isNotBlank()) putExtra(MonitorService.EXTRA_MONITOR_ID, monitorId)
+        }
+        ContextCompat.startForegroundService(this, intent)
+    }
+
+    private fun clearMonitorForm() {
+        editingMonitorId = ""
+        profileName.setText("")
+        store.accounts().firstOrNull()?.let(::applyAccount) ?: selectNewAccount()
+        dep.setText(""); arr.setText(""); date.setText(""); timeFrom.setText(""); timeTo.setText("")
+        passengers.setText("1"); special.isChecked = false; windowSeat.isChecked = false; autoPay.isChecked = false
+        cardNumber.setText(""); cardPassword.setText(""); cardExpire.setText(""); cardValidation.setText("")
+        renderStatus("새 감시 입력 중")
+    }
+
+    private fun accountLabel(account: RailAccount): String =
+        "${account.name} · ${account.operator} · ${account.loginId.takeLast(4)}"
+
+    private fun applyAccount(account: RailAccount) {
+        selectedAccountId = account.id
+        if (::accountInput.isInitialized) accountInput.setText(accountLabel(account), false)
+        railway.setText(account.operator, false); selectedRailway = account.operator
+        srtId.setText(account.loginId); srtPassword.setText(account.password)
+        if (::cardNumber.isInitialized) {
+            cardNumber.setText(account.cardNumber); cardPassword.setText(account.cardPassword)
+            cardExpire.setText(account.cardExpire); cardValidation.setText(account.cardValidation)
+        }
+        updateRailwayCapabilities()
+    }
+
+    private fun selectNewAccount() {
+        selectedAccountId = ProfileStore.NEW_ACCOUNT_ID
+        if (::accountInput.isInitialized) accountInput.setText("새 계정 입력", false)
+        if (::srtId.isInitialized) { srtId.setText(""); srtPassword.setText("") }
+        if (::cardNumber.isInitialized) {
+            cardNumber.setText(""); cardPassword.setText(""); cardExpire.setText(""); cardValidation.setText("")
+        }
+    }
+
+    private fun showAccounts() {
+        val accounts = store.accounts()
+        if (accounts.isEmpty()) {
+            AlertDialog.Builder(this).setTitle("계정 관리").setMessage("저장된 계정 없음. 감시를 저장하면 계정도 암호화 저장돼.").setPositiveButton("확인", null).show()
+            return
+        }
+        val labels = accounts.map { "${it.name} · ${it.operator} · ${it.loginId.takeLast(4)}" }.toTypedArray()
+        AlertDialog.Builder(this).setTitle("계정 관리")
+            .setItems(labels) { _, index ->
+                val account = accounts[index]
+                val used = store.monitors().count { it.accountId == account.id }
+                AlertDialog.Builder(this).setTitle(account.name)
+                    .setMessage("연결된 감시 ${used}개\n계정 수정은 연결된 감시를 편집해 저장하면 반영돼.")
+                    .setNegativeButton("닫기", null)
+                    .setPositiveButton("미사용 계정 삭제") { _, _ ->
+                        if (!store.deleteAccount(account.id)) AlertDialog.Builder(this).setMessage("연결된 감시가 있어 삭제할 수 없어").setPositiveButton("확인", null).show()
+                    }.show()
+            }.setNegativeButton("닫기", null).show()
     }
 
     private fun primaryButton(label: String, action: () -> Unit): MaterialButton = MaterialButton(this).apply {
@@ -858,10 +1036,12 @@ class MainActivity : ComponentActivity() {
 
     private fun loadProfile(name: String) {
         val c = store.load(name) ?: return
+        editingMonitorId = c.monitorId
         store.setActiveProfile(name)
         profileName.setText(name)
         railway.setText(c.operator, false)
         selectedRailway = c.operator
+        store.accounts().firstOrNull { it.id == c.accountId }?.let(::applyAccount)
         srtId.setText(c.srtId); srtPassword.setText(c.srtPassword); dep.setText(c.dep); arr.setText(c.arr)
         date.setText(c.date); timeFrom.setText(c.timeFrom); timeTo.setText(c.timeTo); passengers.setText(c.passengers.toString())
         special.isChecked = c.special; windowSeat.isChecked = c.windowSeat; autoPay.isChecked = c.autoPay
@@ -911,7 +1091,8 @@ class MainActivity : ComponentActivity() {
             passengerCount, special.isChecked, windowSeat.isChecked, 30, 60,
             autoPay.isChecked, normalizedCard, cardPassword.text.toString(),
             cardExpire.text.toString(), cardValidation.text.toString(), operator = operatorValue,
-            depCode = departureCode, arrCode = arrivalCode
+            depCode = departureCode, arrCode = arrivalCode, monitorId = editingMonitorId,
+            accountId = selectedAccountId
         )
     }
 
@@ -925,15 +1106,30 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun saveProfile() {
+        if (store.monitors().firstOrNull { it.id == editingMonitorId }?.active == true) {
+            renderStatus("활성 감시는 중지한 뒤 편집해")
+            return
+        }
         val config = validatedConfig() ?: return
-        store.save(profileName.text.toString().trim().ifEmpty { "기본" }, config)
+        val saved = try { store.save(profileName.text.toString().trim().ifEmpty { "기본" }, config) }
+        catch (error: IllegalArgumentException) { renderStatus(error.message.orEmpty()); return }
+        catch (error: SecureStoreException) { renderStatus(error.message.orEmpty()); return }
+        editingMonitorId = saved.id
         renderStatus("프로필을 암호화해 저장했어")
+        refreshDashboard()
     }
 
     private fun startMonitor() {
         val config = validatedConfig() ?: return
-        store.save(profileName.text.toString().trim().ifEmpty { "기본" }, config)
-        ContextCompat.startForegroundService(this, Intent(this, MonitorService::class.java))
+        if (store.monitors().firstOrNull { it.id == editingMonitorId }?.active == true) {
+            renderStatus("이미 실행 중이야")
+            return
+        }
+        val monitor = try { store.save(profileName.text.toString().trim().ifEmpty { "기본" }, config) }
+        catch (error: IllegalArgumentException) { renderStatus(error.message.orEmpty()); return }
+        catch (error: SecureStoreException) { renderStatus(error.message.orEmpty()); return }
+        editingMonitorId = monitor.id
+        confirmStart(monitor)
         renderStatus("로그인 준비 중")
     }
 
