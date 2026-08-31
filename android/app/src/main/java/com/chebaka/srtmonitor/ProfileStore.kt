@@ -26,6 +26,7 @@ data class RailAccount(
     val cardPassword: String = "",
     val cardExpire: String = "",
     val cardValidation: String = "",
+    val needsReauth: Boolean = false,
 )
 
 data class MonitorDefinition(
@@ -46,6 +47,8 @@ data class MonitorDefinition(
     val depCode: String = "",
     val arrCode: String = "",
     val active: Boolean = false,
+    val legacyReadOnly: Boolean = false,
+    val migratedFromId: String = "",
 )
 
 data class MonitorConfig(
@@ -66,11 +69,12 @@ data class MonitorConfig(
     val cardPassword: String,
     val cardExpire: String,
     val cardValidation: String,
-    val operator: String = "SRT",
+    val operator: String = ProfileStore.KORAIL_OPERATOR,
     val depCode: String = "",
     val arrCode: String = "",
     val monitorId: String = "",
     val accountId: String = "",
+    val migratedFromId: String = "",
 ) {
     fun toJson(): String = JSONObject().apply {
         put("srtId", srtId); put("srtPassword", srtPassword)
@@ -78,11 +82,7 @@ data class MonitorConfig(
         put("timeFrom", timeFrom); put("timeTo", timeTo)
         put("passengers", passengers); put("special", special)
         put("windowSeat", windowSeat); put("pollMin", pollMin); put("pollMax", pollMax)
-        put("autoPay", autoPay)
-        if (autoPay) {
-            put("cardNumber", cardNumber); put("cardPassword", cardPassword)
-            put("cardExpire", cardExpire); put("cardValidation", cardValidation)
-        }
+        put("autoPay", false)
         put("operator", operator)
         put("depCode", depCode); put("arrCode", arrCode)
         put("monitorId", monitorId); put("accountId", accountId)
@@ -93,17 +93,26 @@ class SecureStoreException : IllegalStateException("암호화된 설정을 읽�
 
 class ProfileStore(context: Context) {
     private val prefs = context.getSharedPreferences("srt_secure_profile", Context.MODE_PRIVATE)
-    private val alias = "SrtWatchProfileKey"
+    private val alias = "RailWatchProfileKeyV3"
 
-    init { synchronized(PROCESS_LOCK) { migrateLegacyProfiles(); pauseAfterReboot(context) } }
+    init { synchronized(PROCESS_LOCK) { migrateProfiles(); pauseUncertainReservations(); pauseAfterReboot(context) } }
 
     fun save(profileName: String, config: MonitorConfig): MonitorDefinition = synchronized(PROCESS_LOCK) {
+        require(config.operator == KORAIL_OPERATOR) { "KORAIL+ 감시만 새로 저장할 수 있어" }
         val accounts = accounts().toMutableList()
         val monitors = monitors().toMutableList()
         val old = monitors.firstOrNull { it.id == config.monitorId }
         if (config.monitorId.isNotBlank() && old == null) throw IllegalArgumentException("편집할 감시를 찾지 못했어")
+        if (old?.legacyReadOnly == true) throw IllegalArgumentException("기존 SRT 감시는 KORAIL+로 복사해")
         if (old == null && monitors.any { it.name == profileName }) throw IllegalArgumentException("같은 이름의 감시가 이미 있어")
+        if (config.migratedFromId.isNotBlank()) {
+            require(monitors.any { it.id == config.migratedFromId && it.legacyReadOnly }) { "전환할 SRT 감시를 찾지 못했어" }
+            require(monitors.none { it.migratedFromId == config.migratedFromId }) { "이미 KORAIL+로 전환한 감시야" }
+        }
         val selectedAccount = accounts.firstOrNull { it.id == config.accountId }
+        if (selectedAccount != null && selectedAccount.operator != KORAIL_OPERATOR) {
+            throw IllegalArgumentException("KORAIL+ 계정을 선택해")
+        }
         if (config.accountId == NEW_ACCOUNT_ID && accounts.any {
                 accountKey(it.operator, it.loginId) == accountKey(config.operator, config.srtId)
             }) {
@@ -119,28 +128,25 @@ class ProfileStore(context: Context) {
         }
         val accountChanged = existingAccount != null && existingAccount != existingAccount.copy(
             operator = config.operator, loginId = config.srtId, password = config.srtPassword,
-            cardNumber = config.cardNumber, cardPassword = config.cardPassword,
-            cardExpire = config.cardExpire, cardValidation = config.cardValidation,
+            cardNumber = "", cardPassword = "", cardExpire = "", cardValidation = "", needsReauth = false,
         )
         if (accountChanged && monitors.any { it.accountId == existingAccount?.id && it.active }) {
             throw IllegalArgumentException("실행 중인 감시가 쓰는 계정은 중지한 뒤 수정해")
         }
         val account = existingAccount?.copy(
             operator = config.operator, loginId = config.srtId, password = config.srtPassword,
-            cardNumber = config.cardNumber, cardPassword = config.cardPassword,
-            cardExpire = config.cardExpire, cardValidation = config.cardValidation,
+            cardNumber = "", cardPassword = "", cardExpire = "", cardValidation = "", needsReauth = false,
         ) ?: RailAccount(
             UUID.randomUUID().toString(), "${config.operator} ${config.srtId.takeLast(4)}",
-            config.operator, config.srtId, config.srtPassword, config.cardNumber,
-            config.cardPassword, config.cardExpire, config.cardValidation,
+            config.operator, config.srtId, config.srtPassword, "", "", "", "", false,
         )
         existingAccount?.let(accounts::remove)
         accounts.add(account)
         val monitor = MonitorDefinition(
             old?.id ?: UUID.randomUUID().toString(), profileName, account.id, config.dep, config.arr,
             config.date, config.timeFrom, config.timeTo, config.passengers, config.special,
-            config.windowSeat, config.pollMin, config.pollMax, config.autoPay, config.depCode,
-            config.arrCode, old?.active ?: false,
+            false, config.pollMin, config.pollMax, false, config.depCode,
+            config.arrCode, old?.active ?: false, false, old?.migratedFromId ?: config.migratedFromId,
         )
         old?.let(monitors::remove)
         monitors.add(monitor)
@@ -152,7 +158,7 @@ class ProfileStore(context: Context) {
     fun load(profileName: String): MonitorConfig? =
         monitors().firstOrNull { it.name == profileName }?.let(::configFor)
 
-    fun listProfiles(): List<String> = monitors().map { it.name }.sorted()
+    fun listProfiles(): List<String> = monitors().filterNot { it.legacyReadOnly }.map { it.name }.sorted()
 
     fun activeProfile(): String? {
         val id = prefs.getString(ACTIVE_MONITOR_KEY, null)
@@ -176,12 +182,13 @@ class ProfileStore(context: Context) {
 
     fun configFor(monitor: MonitorDefinition): MonitorConfig? {
         val account = accounts().firstOrNull { it.id == monitor.accountId } ?: return null
+        if (monitor.legacyReadOnly || account.operator != KORAIL_OPERATOR || account.needsReauth) return null
         return MonitorConfig(
             account.loginId, account.password, monitor.dep, monitor.arr, monitor.date,
             monitor.timeFrom, monitor.timeTo, monitor.passengers, monitor.special,
             monitor.windowSeat, monitor.pollMin, monitor.pollMax, monitor.autoPay,
             account.cardNumber, account.cardPassword, account.cardExpire, account.cardValidation,
-            account.operator, monitor.depCode, monitor.arrCode, monitor.id, account.id,
+            account.operator, monitor.depCode, monitor.arrCode, monitor.id, account.id, monitor.migratedFromId,
         )
     }
 
@@ -191,6 +198,7 @@ class ProfileStore(context: Context) {
         val all = monitors().toMutableList()
         val index = all.indexOfFirst { it.id == id }
         if (index < 0) return@synchronized false
+        if (active && activationError(all[index]) != null) return@synchronized false
         if (active && !all[index].active && all.count { it.active } >= MAX_ACTIVE) return@synchronized false
         all[index] = all[index].copy(active = active)
         write(accounts(), all)
@@ -199,10 +207,37 @@ class ProfileStore(context: Context) {
 
     fun setAllActive(active: Boolean): Int = synchronized(PROCESS_LOCK) {
         val all = monitors()
-        val changed = all.mapIndexed { index, item -> item.copy(active = active && index < MAX_ACTIVE) }
+        var enabled = 0
+        val changed = all.map { item ->
+            val canStart = active && enabled < MAX_ACTIVE && activationError(item) == null
+            if (canStart) enabled += 1
+            item.copy(active = canStart)
+        }
         write(accounts(), changed)
         changed.count { it.active }
     }
+
+    fun activationError(monitor: MonitorDefinition): String? {
+        if (monitor.legacyReadOnly) return "기존 SRT 감시는 실행할 수 없어. KORAIL+로 복사해"
+        if (lastStatus(monitor.id)?.first in UNCERTAIN_CODES) return "예약 결과가 불명확해. KORAIL+ 예약내역 확인 후 상태를 해제해"
+        val account = accounts().firstOrNull { it.id == monitor.accountId } ?: return "연결된 계정을 찾지 못했어"
+        if (account.operator != KORAIL_OPERATOR) return "KORAIL+ 계정을 연결해"
+        if (account.needsReauth || account.password.isBlank()) return "KORAIL+ 비밀번호를 다시 입력해"
+        return null
+    }
+
+    fun workerKey(monitor: MonitorDefinition): String? = accounts().firstOrNull { it.id == monitor.accountId }
+        ?.let { accountKey(it.operator, it.loginId) }
+
+    fun clearReservationUncertainty(id: String): Boolean = synchronized(PROCESS_LOCK) {
+        if (lastStatus(id)?.first !in UNCERTAIN_CODES) return@synchronized false
+        updateLastStatus(id, "STOPPED", "KORAIL+ 예약내역 확인 완료 · 중지됨")
+        true
+    }
+
+    fun migrationNoticePending(): Boolean = prefs.getBoolean(MIGRATION_NOTICE_KEY, false)
+
+    fun dismissMigrationNotice() { prefs.edit().putBoolean(MIGRATION_NOTICE_KEY, false).apply() }
 
     fun deleteMonitor(id: String): Boolean = synchronized(PROCESS_LOCK) {
         val all = monitors()
@@ -246,14 +281,24 @@ class ProfileStore(context: Context) {
         check(saved) { "감시 설정 저장 실패" }
     }
 
+    private fun migrateProfiles() {
+        when (prefs.getInt(SCHEMA_KEY, 0)) {
+            in SCHEMA_VERSION..Int.MAX_VALUE -> Unit
+            2 -> migrateV2Profiles()
+            else -> migrateLegacyProfiles()
+        }
+        verifyGraph(accounts(), monitors())
+        cleanupLegacySecrets()
+    }
+
     private fun migrateLegacyProfiles() {
-        if (prefs.getInt(SCHEMA_KEY, 0) >= SCHEMA_VERSION) return
         val raw = prefs.getString(LEGACY_PROFILES_KEY, null)
         if (raw == null) {
             write(emptyList(), emptyList())
+            prefs.edit().putBoolean(MIGRATION_NOTICE_KEY, false).apply()
             return
         }
-        val legacy = try { JSONObject(decrypt(raw)) } catch (_: Exception) { throw SecureStoreException() }
+        val legacy = try { JSONObject(decrypt(raw, LEGACY_KEY_ALIAS)) } catch (_: Exception) { throw SecureStoreException() }
         val accounts = mutableListOf<RailAccount>()
         val monitors = mutableListOf<MonitorDefinition>()
         val keys = legacy.keys()
@@ -262,29 +307,74 @@ class ProfileStore(context: Context) {
             val o = legacy.optJSONObject(name) ?: throw SecureStoreException()
             val operator = o.optString("operator", "SRT")
             val account = accounts.firstOrNull {
-                accountKey(it.operator, it.loginId) == accountKey(operator, o.optString("srtId")) &&
-                    it.password == o.optString("srtPassword") && it.cardNumber == o.optString("cardNumber") &&
-                    it.cardPassword == o.optString("cardPassword") && it.cardExpire == o.optString("cardExpire") &&
-                    it.cardValidation == o.optString("cardValidation")
+                accountKey(it.operator, it.loginId) == accountKey(operator, o.optString("srtId"))
             } ?: RailAccount(
                 UUID.randomUUID().toString(), "$operator ${o.optString("srtId").takeLast(4)}", operator,
-                o.optString("srtId"), o.optString("srtPassword"), o.optString("cardNumber"),
-                o.optString("cardPassword"), o.optString("cardExpire"), o.optString("cardValidation"),
+                o.optString("srtId"), "", "", "", "", "", true,
             ).also(accounts::add)
             monitors += MonitorDefinition(
                 UUID.randomUUID().toString(), name, account.id, o.optString("dep"), o.optString("arr"),
                 o.optString("date"), o.optString("timeFrom"), o.optString("timeTo"),
                 o.optInt("passengers", 1), o.optBoolean("special"), o.optBoolean("windowSeat"),
-                o.optInt("pollMin", 30), o.optInt("pollMax", 60), o.optBoolean("autoPay"),
-                o.optString("depCode"), o.optString("arrCode"), false,
+                o.optInt("pollMin", 30), o.optInt("pollMax", 60), false,
+                o.optString("depCode"), o.optString("arrCode"), false, operator != KORAIL_OPERATOR,
             )
         }
+        verifyV3(accounts, monitors)
         write(accounts, monitors)
-        prefs.getString(LEGACY_ACTIVE_KEY, null)?.let { legacyName ->
-            monitors.firstOrNull { it.name == legacyName }?.let {
-                prefs.edit().putString(ACTIVE_MONITOR_KEY, it.id).apply()
-            }
+        prefs.edit().putBoolean(MIGRATION_NOTICE_KEY, accounts.isNotEmpty() || monitors.isNotEmpty()).apply()
+    }
+
+    private fun migrateV2Profiles() {
+        val oldAccounts = readArray(LEGACY_ACCOUNTS_KEY, LEGACY_KEY_ALIAS).map {
+            accountFromJson(it) ?: throw SecureStoreException()
         }
+        val oldMonitors = readArray(LEGACY_MONITORS_KEY, LEGACY_KEY_ALIAS).map {
+            monitorFromJson(it) ?: throw SecureStoreException()
+        }
+        verifyGraph(oldAccounts, oldMonitors)
+        val operatorByAccount = oldAccounts.associate { it.id to it.operator }
+        val migratedAccounts = oldAccounts.map {
+            it.copy(password = "", cardNumber = "", cardPassword = "", cardExpire = "", cardValidation = "", needsReauth = true)
+        }
+        val migratedMonitors = oldMonitors.map {
+            it.copy(
+                active = false,
+                autoPay = false,
+                legacyReadOnly = operatorByAccount[it.accountId] != KORAIL_OPERATOR,
+            )
+        }
+        verifyV3(migratedAccounts, migratedMonitors)
+        write(migratedAccounts, migratedMonitors)
+        prefs.edit().putBoolean(MIGRATION_NOTICE_KEY, migratedAccounts.isNotEmpty() || migratedMonitors.isNotEmpty()).apply()
+    }
+
+    private fun verifyGraph(accounts: List<RailAccount>, monitors: List<MonitorDefinition>) {
+        if (accounts.map { it.id }.toSet().size != accounts.size) throw SecureStoreException()
+        if (monitors.map { it.id }.toSet().size != monitors.size) throw SecureStoreException()
+        val accountIds = accounts.map { it.id }.toSet()
+        if (monitors.any { it.accountId !in accountIds }) throw SecureStoreException()
+    }
+
+    private fun verifyV3(accounts: List<RailAccount>, monitors: List<MonitorDefinition>) {
+        verifyGraph(accounts, monitors)
+        if (accounts.any { it.cardNumber.isNotEmpty() || it.cardPassword.isNotEmpty() || it.cardExpire.isNotEmpty() || it.cardValidation.isNotEmpty() }) {
+            throw SecureStoreException()
+        }
+        if (monitors.any { it.active || it.autoPay }) throw SecureStoreException()
+        val operatorByAccount = accounts.associate { it.id to it.operator }
+        if (monitors.any { it.legacyReadOnly != (operatorByAccount[it.accountId] != KORAIL_OPERATOR) }) throw SecureStoreException()
+    }
+
+    private fun cleanupLegacySecrets() {
+        val readable = try { verifyGraph(accounts(), monitors()); true } catch (_: Exception) { false }
+        if (!readable) throw SecureStoreException()
+        check(prefs.edit()
+            .remove(LEGACY_ACCOUNTS_KEY).remove(LEGACY_MONITORS_KEY).remove(LEGACY_PROFILES_KEY)
+            .remove(LEGACY_ACTIVE_KEY).remove(LEGACY_SELECTED_MONITOR_KEY).remove(LEGACY_STATUS_KEY)
+            .commit()) { "이전 보안정보 삭제 실패" }
+        val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        if (ks.containsAlias(LEGACY_KEY_ALIAS)) ks.deleteEntry(LEGACY_KEY_ALIAS)
     }
 
     private fun pauseAfterReboot(context: Context) {
@@ -298,15 +388,23 @@ class ProfileStore(context: Context) {
         prefs.edit().putInt(BOOT_COUNT_KEY, current).apply()
     }
 
-    private fun readArray(key: String): List<JSONObject> {
+    private fun pauseUncertainReservations() {
+        val affected = monitors().filter { it.active && lastStatus(it.id)?.first == "RESERVE_IN_FLIGHT" }
+        if (affected.isEmpty()) return
+        val ids = affected.map { it.id }.toSet()
+        write(accounts(), monitors().map { if (it.id in ids) it.copy(active = false) else it })
+        affected.forEach { updateLastStatus(it.id, "UNCERTAIN", "예약 요청 결과 불명 · KORAIL+ 예약내역 확인 필요") }
+    }
+
+    private fun readArray(key: String, keyAlias: String = alias): List<JSONObject> {
         val raw = prefs.getString(key, null) ?: return emptyList()
-        val array = try { JSONArray(decrypt(raw)) } catch (_: Exception) { throw SecureStoreException() }
+        val array = try { JSONArray(decrypt(raw, keyAlias)) } catch (_: Exception) { throw SecureStoreException() }
         return (0 until array.length()).map { array.optJSONObject(it) ?: throw SecureStoreException() }
     }
 
     private fun readObject(key: String): JSONObject {
         val raw = prefs.getString(key, null) ?: return JSONObject()
-        return try { JSONObject(decrypt(raw)) } catch (_: Exception) { JSONObject() }
+        return try { JSONObject(decrypt(raw, alias)) } catch (_: Exception) { JSONObject() }
     }
 
     private fun writeEncrypted(key: String, value: String) {
@@ -316,7 +414,7 @@ class ProfileStore(context: Context) {
     private fun accountJson(a: RailAccount) = JSONObject().apply {
         put("id", a.id); put("name", a.name); put("operator", a.operator); put("loginId", a.loginId)
         put("password", a.password); put("cardNumber", a.cardNumber); put("cardPassword", a.cardPassword)
-        put("cardExpire", a.cardExpire); put("cardValidation", a.cardValidation)
+        put("cardExpire", a.cardExpire); put("cardValidation", a.cardValidation); put("needsReauth", a.needsReauth)
     }
 
     private fun accountKey(operator: String, loginId: String): String =
@@ -327,12 +425,13 @@ class ProfileStore(context: Context) {
         put("date", m.date); put("timeFrom", m.timeFrom); put("timeTo", m.timeTo); put("passengers", m.passengers)
         put("special", m.special); put("windowSeat", m.windowSeat); put("pollMin", m.pollMin); put("pollMax", m.pollMax)
         put("autoPay", m.autoPay); put("depCode", m.depCode); put("arrCode", m.arrCode); put("active", m.active)
+        put("legacyReadOnly", m.legacyReadOnly); put("migratedFromId", m.migratedFromId)
     }
 
     private fun accountFromJson(o: JSONObject) = try {
         RailAccount(o.getString("id"), o.optString("name"), o.getString("operator"), o.getString("loginId"),
             o.getString("password"), o.optString("cardNumber"), o.optString("cardPassword"),
-            o.optString("cardExpire"), o.optString("cardValidation"))
+            o.optString("cardExpire"), o.optString("cardValidation"), o.optBoolean("needsReauth"))
     } catch (_: Exception) { null }
 
     private fun monitorFromJson(o: JSONObject) = try {
@@ -340,28 +439,28 @@ class ProfileStore(context: Context) {
             o.getString("arr"), o.getString("date"), o.getString("timeFrom"), o.getString("timeTo"),
             o.getInt("passengers"), o.getBoolean("special"), o.getBoolean("windowSeat"), o.getInt("pollMin"),
             o.getInt("pollMax"), o.getBoolean("autoPay"), o.optString("depCode"), o.optString("arrCode"),
-            o.optBoolean("active"))
+            o.optBoolean("active"), o.optBoolean("legacyReadOnly"), o.optString("migratedFromId"))
     } catch (_: Exception) { null }
 
-    private fun key(): SecretKey {
+    private fun key(keyAlias: String): SecretKey {
         val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-        (ks.getKey(alias, null) as? SecretKey)?.let { return it }
+        (ks.getKey(keyAlias, null) as? SecretKey)?.let { return it }
         val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
-        generator.init(KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
+        generator.init(KeyGenParameterSpec.Builder(keyAlias, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
             .setBlockModes(KeyProperties.BLOCK_MODE_GCM).setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE).build())
         return generator.generateKey()
     }
 
     private fun encrypt(value: String): String {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.ENCRYPT_MODE, key())
+        cipher.init(Cipher.ENCRYPT_MODE, key(alias))
         return Base64.encodeToString(cipher.iv + cipher.doFinal(value.toByteArray(StandardCharsets.UTF_8)), Base64.NO_WRAP)
     }
 
-    private fun decrypt(value: String): String {
+    private fun decrypt(value: String, keyAlias: String): String {
         val combined = Base64.decode(value, Base64.NO_WRAP)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, combined.copyOfRange(0, 12)))
+        cipher.init(Cipher.DECRYPT_MODE, key(keyAlias), GCMParameterSpec(128, combined.copyOfRange(0, 12)))
         return String(cipher.doFinal(combined.copyOfRange(12, combined.size)), StandardCharsets.UTF_8)
     }
 
@@ -369,14 +468,22 @@ class ProfileStore(context: Context) {
         private val PROCESS_LOCK = Any()
         const val MAX_ACTIVE = 5
         const val NEW_ACCOUNT_ID = "__new_account__"
-        private const val SCHEMA_VERSION = 2
+        const val KORAIL_OPERATOR = "KORAIL"
+        private const val SCHEMA_VERSION = 3
         private const val SCHEMA_KEY = "schema_version"
-        private const val ACCOUNTS_KEY = "rail_accounts"
-        private const val MONITORS_KEY = "monitor_definitions"
-        private const val STATUS_KEY = "monitor_status"
-        private const val ACTIVE_MONITOR_KEY = "active_monitor"
+        private const val ACCOUNTS_KEY = "rail_accounts_v3"
+        private const val MONITORS_KEY = "monitor_definitions_v3"
+        private const val STATUS_KEY = "monitor_status_v3"
+        private const val LEGACY_ACCOUNTS_KEY = "rail_accounts"
+        private const val LEGACY_MONITORS_KEY = "monitor_definitions"
+        private const val LEGACY_STATUS_KEY = "monitor_status"
+        private const val ACTIVE_MONITOR_KEY = "active_monitor_v3"
+        private const val LEGACY_SELECTED_MONITOR_KEY = "active_monitor"
         private const val LEGACY_PROFILES_KEY = "profiles"
         private const val LEGACY_ACTIVE_KEY = "active_profile"
+        private const val LEGACY_KEY_ALIAS = "SrtWatchProfileKey"
+        private const val MIGRATION_NOTICE_KEY = "migration_v3_notice"
         private const val BOOT_COUNT_KEY = "last_boot_count"
+        private val UNCERTAIN_CODES = setOf("RESERVE_IN_FLIGHT", "UNCERTAIN")
     }
 }

@@ -6,7 +6,9 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.IBinder
+import android.provider.Settings
 import androidx.core.app.NotificationCompat
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
@@ -43,7 +45,7 @@ class MonitorService : Service() {
         when (intent?.action) {
             ACTION_START_MONITOR -> intent.getStringExtra(EXTRA_MONITOR_ID)?.let {
                 if (store.setMonitorActive(it, true)) { restartAccountWorker(it); startActiveWorkers() }
-                else publishLimitError(it)
+                else publishStartError(it)
             }
             ACTION_STOP_MONITOR -> intent.getStringExtra(EXTRA_MONITOR_ID)?.let(::stopMonitor)
             ACTION_START_ALL -> { store.setAllActive(true); restartAllWorkers(); startActiveWorkers() }
@@ -62,11 +64,18 @@ class MonitorService : Service() {
     }
 
     private fun startActiveWorkers() {
+        store.monitors().filter {
+            it.active && store.lastStatus(it.id)?.first == "RESERVE_IN_FLIGHT"
+        }.forEach {
+            store.setMonitorActive(it.id, false)
+            store.updateLastStatus(it.id, "UNCERTAIN", "예약 요청 결과 불명 · KORAIL+ 예약내역 확인 필요")
+            broadcast(it.id, "UNCERTAIN", "예약 요청 결과 불명 · KORAIL+ 예약내역 확인 필요")
+        }
         synchronized(workerLock) {
             if (!Python.isStarted()) Python.start(AndroidPlatform(this))
         }
         val active = store.monitors().filter { it.active }
-        val byAccount = active.groupBy { it.accountId }
+        val byAccount = active.groupBy { store.workerKey(it) ?: it.accountId }
         synchronized(workerLock) {
             workers.keys.filterNot { it in byAccount }.forEach {
                 generations[it] = (generations[it] ?: 0L) + 1L
@@ -77,7 +86,7 @@ class MonitorService : Service() {
         byAccount.forEach { (accountId, monitors) ->
             val configs = monitors.mapNotNull(store::configFor)
             if (configs.isEmpty()) return@forEach
-            val json = JSONArray().apply { configs.forEach { put(JSONObject(it.toJson())) } }.toString()
+            val json = JSONArray().apply { configs.forEach { put(runtimeConfig(it)) } }.toString()
             synchronized(workerLock) {
                 if (workers[accountId]?.isDone == false) return@forEach
                 val generation = (generations[accountId] ?: 0L) + 1L
@@ -107,6 +116,15 @@ class MonitorService : Service() {
         }
     }
 
+    private fun runtimeConfig(config: MonitorConfig): JSONObject = JSONObject(config.toJson()).apply {
+        put("deviceId", Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID).orEmpty())
+        put("osVersion", Build.VERSION.RELEASE.orEmpty())
+        put("deviceModel", Build.MODEL.orEmpty())
+        put("deviceWidth", resources.displayMetrics.widthPixels)
+        put("deviceHeight", resources.displayMetrics.heightPixels)
+        put("androidSdkInt", Build.VERSION.SDK_INT)
+    }
+
     private fun stopMonitor(id: String) {
         restarting.remove(id)
         store.setMonitorActive(id, false)
@@ -121,9 +139,10 @@ class MonitorService : Service() {
     }
 
     private fun restartAccountWorker(monitorId: String) {
-        val accountId = store.monitors().firstOrNull { it.id == monitorId }?.accountId ?: return
-        if (workers[accountId]?.isDone != false || !Python.isStarted()) return
-        val ids = workerMonitorIds[accountId].orEmpty().toList()
+        val monitor = store.monitors().firstOrNull { it.id == monitorId } ?: return
+        val workerKey = store.workerKey(monitor) ?: return
+        if (workers[workerKey]?.isDone != false || !Python.isStarted()) return
+        val ids = workerMonitorIds[workerKey].orEmpty().toList()
         restarting.addAll(ids)
         try {
             Python.getInstance().getModule("multi_engine")
@@ -193,8 +212,10 @@ class MonitorService : Service() {
         broadcast(id, "ERROR", message)
     }
 
-    private fun publishLimitError(id: String) {
-        broadcast(id, "ERROR", "동시 활성 감시는 최대 ${ProfileStore.MAX_ACTIVE}개야")
+    private fun publishStartError(id: String) {
+        val monitor = store.monitors().firstOrNull { it.id == id }
+        val message = monitor?.let(store::activationError) ?: "동시 활성 감시는 최대 ${ProfileStore.MAX_ACTIVE}개야"
+        broadcast(id, "ERROR", message)
     }
 
     private fun broadcast(id: String, code: String, message: String) {
@@ -229,10 +250,12 @@ class MonitorService : Service() {
             .setOngoing(code == "PAYMENT_PENDING").setAutoCancel(code != "PAYMENT_PENDING")
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
-        if (code == "PAYMENT_PENDING") {
+        if (code == "PAYMENT_PENDING" || code == "UNCERTAIN") {
             val webIntent = Intent(Intent.ACTION_VIEW, Uri.parse(KORAIL_PAYMENT_URL))
-            builder.addAction(R.drawable.ic_stat_srt, "공식 결제", PendingIntent.getActivity(
+            builder.addAction(R.drawable.ic_stat_srt, if (code == "PAYMENT_PENDING") "공식 결제" else "예약내역 확인", PendingIntent.getActivity(
                 this, requestCode(id, 1), webIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
+        }
+        if (code == "PAYMENT_PENDING") {
             val verify = Intent(this, MonitorService::class.java).apply {
                 action = ACTION_VERIFY_KORAIL_PAYMENT
                 putExtra(EXTRA_MONITOR_ID, id)
@@ -280,7 +303,7 @@ class MonitorService : Service() {
         const val EXTRA_KORAIL_TRAIN_NO = "korail_train_no"
         const val CHANNEL_ID = "srt_monitor"
         const val NOTIFICATION_ID = 1001
-        private val TERMINAL_CODES = setOf("COMPLETED", "ERROR", "EXPIRED", "STOPPED")
+        private val TERMINAL_CODES = setOf("COMPLETED", "ERROR", "EXPIRED", "STOPPED", "UNCERTAIN", "LEGACY_DISABLED")
         private const val KORAIL_PAYMENT_URL = "https://www.korail.com/ticket/reservation/list"
     }
 }

@@ -1,192 +1,192 @@
-"""KORAIL monitoring and reservation engine.
+"""KORAIL+ adapter. Reservation allowed; payment deliberately absent."""
 
-This module reserves KORAIL trains and can monitor the payment state until the
-reservation deadline. KORAIL card payment is an explicit opt-in, one-shot call
-to the known mobile payment endpoint; transport errors are never retried.
-"""
-import json
-import random
 import re
-import threading
+import time
 from datetime import datetime
 
-from korail2 import AdultPassenger, Korail, NoResultsError, ReserveOption
-
-
-_stop = threading.Event()
-_payment_check = threading.Event()
-_PAYMENT_POLL_SECONDS = 60
-_MAX_PAYMENT_ERRORS = 5
-_KORAIL_RESERVATION_INFO_URL = (
-    "https://smart.letskorail.com:443/classes/"
-    "com.korail.mobile.certification.ReservationList"
+from korail_mobile_api import (
+    DynapathConfig,
+    DynapathTokenSettings,
+    KorailAppUpdateRequiredError,
+    KorailAuthError,
+    KorailClient,
+    KorailConfig,
+    KorailDynaPathError,
+    KorailDynaPathRequiredError,
+    KorailInvalidRequestError,
+    KorailMutationNotAllowedError,
+    KorailNoDirectTrainError,
+    KorailNoResultsError,
+    KorailPassengerCounts,
+    KorailProtocolError,
+    KorailReservationRefusedError,
+    KorailSeatClass,
+    KorailSeatUnavailableError,
+    KorailSoldOutError,
+    KorailTransportError,
+    MutationConsent,
+    TrainSearchQuery,
 )
-_KORAIL_PAYMENT_URL = (
-    "https://smart.letskorail.com:443/classes/"
-    "com.korail.mobile.payment.ReservationPayment"
+from korail_mobile_api.constants import build_dalvik_user_agent
+from korail_mobile_api.dynapath import KORAIL_DYNAPATH_AS_VALUE
+
+
+_TERMINAL_ERRORS = (
+    KorailAppUpdateRequiredError,
+    KorailAuthError,
+    KorailDynaPathError,
+    KorailDynaPathRequiredError,
+    KorailInvalidRequestError,
+    KorailMutationNotAllowedError,
+    KorailProtocolError,
+    KorailReservationRefusedError,
 )
-
-def stop_monitor():
-    _stop.set()
-    _payment_check.set()
+_INVENTORY_ERRORS = (KorailSoldOutError, KorailSeatUnavailableError)
 
 
-def request_payment_check():
-    """Wake an active payment monitor for an immediate ticket refresh."""
-    _payment_check.set()
-
-
-def _emit(callback, message):
-    try:
-        callback.onStatus(message)
-    except Exception:
-        pass
-
-
-def _configure_session(session):
-    original = session.request
-
-    def request(method, url, **kwargs):
-        kwargs.setdefault("timeout", (10, 20))
-        return original(method, url, **kwargs)
-
-    session.request = request
+def _client_config(config):
+    settings = DynapathTokenSettings(
+        device_id=config["deviceId"],
+        as_value=KORAIL_DYNAPATH_AS_VALUE,
+        app_start_ts=str(int(time.time() * 1000)),
+        os_version=config["osVersion"],
+        device_model=config["deviceModel"],
+    )
+    dynapath = DynapathConfig(
+        enabled=True,
+        token_settings=settings,
+        device_name=config["deviceModel"],
+        os_version=config["osVersion"],
+    )
+    return KorailConfig(
+        dynapath=dynapath,
+        user_agent=build_dalvik_user_agent(
+            os_release=config["osVersion"],
+            device_model=config["deviceModel"],
+        ),
+        device_width=int(config["deviceWidth"]),
+        device_height=int(config["deviceHeight"]),
+        android_sdk_int=int(config["androidSdkInt"]),
+    )
 
 
 def _login(config):
-    client = Korail(config["srtId"], config["srtPassword"], auto_login=False)
-    _configure_session(client._session)
-    if not client.login():
-        raise RuntimeError("KORAIL login failed")
-    return client
+    client = KorailClient(_client_config(config))
+    try:
+        client.login(config["srtId"], config["srtPassword"])
+        return client
+    except Exception:
+        client.close()
+        raise
 
 
-def _response_detail(payload, fallback):
-    return str(
-        payload.get("h_msg_txt")
-        or payload.get("strMsg")
-        or payload.get("msg")
-        or fallback
-    ).strip()[:180]
-
-
-def _reservation_wct_no(client, reservation):
-    response = client._session.get(
-        _KORAIL_RESERVATION_INFO_URL,
-        params={
-            "Device": client._device,
-            "Version": client._version,
-            "Key": client._key,
-            "hidPnrNo": reservation.rsv_id,
-        },
+def _history_matches(item, config, train_no=""):
+    return (
+        item.run_date == config["date"]
+        and item.departure_station == config["dep"]
+        and item.arrival_station == config["arr"]
+        and config["timeFrom"] <= str(item.departure_time or "") <= config["timeTo"]
+        and (not train_no or str(item.train_no or "") == str(train_no))
     )
-    payload = json.loads(response.text)
-    if payload.get("strResult") != "SUCC":
-        raise RuntimeError(_response_detail(payload, "예약 결제정보 조회 실패"))
-    wct_no = str(payload.get("h_wct_no", "")).strip()
-    if not wct_no:
-        raise RuntimeError("예약 결제정보 식별자를 받지 못했어")
-    return wct_no
-
-
-def _pay_with_card(client, reservation, config):
-    """Attempt one opt-in payment through the KORAIL mobile endpoint.
-
-    The field mapping follows the MIT-licensed srtgo KTX client. Do not retry
-    after a transport error: the server may have accepted the payment already.
-    """
-    wct_no = _reservation_wct_no(client, reservation)
-    data = {
-        "Device": client._device,
-        "Version": client._version,
-        "Key": client._key,
-        "hidPnrNo": reservation.rsv_id,
-        "hidWctNo": wct_no,
-        "hidTmpJobSqno1": "000000",
-        "hidTmpJobSqno2": "000000",
-        "hidRsvChgNo": "000",
-        "hidInrecmnsGridcnt": "1",
-        "hidStlMnsSqno1": "1",
-        "hidStlMnsCd1": "02",
-        "hidMnsStlAmt1": str(reservation.price),
-        "hidCrdInpWayCd1": "@",
-        "hidStlCrCrdNo1": config["cardNumber"],
-        "hidVanPwd1": config["cardPassword"],
-        "hidCrdVlidTrm1": config["cardExpire"],
-        "hidIsmtMnthNum1": "0",
-        "hidAthnDvCd1": "J",
-        "hidAthnVal1": config["cardValidation"],
-        "hiduserYn": "Y",
-    }
-    response = client._session.post(_KORAIL_PAYMENT_URL, data=data)
-    payload = json.loads(response.text)
-    if payload.get("strResult") != "SUCC":
-        raise RuntimeError(_response_detail(payload, "코레일 자동결제가 거절됐어"))
-    return True
 
 
 def _existing_reservation(client, config):
-    for reservation in client.reservations():
-        if reservation.dep_date != config["date"]:
-            continue
-        if reservation.dep_name != config["dep"] or reservation.arr_name != config["arr"]:
-            continue
-        if config.get("depCode") and getattr(reservation, "dep_code", "") != config["depCode"]:
-            continue
-        if config.get("arrCode") and getattr(reservation, "arr_code", "") != config["arrCode"]:
-            continue
-        if not (config["timeFrom"] <= reservation.dep_time <= config["timeTo"]):
-            continue
-        return reservation
-    return None
+    return next(
+        (item for item in client.get_reservation_history().trains if _history_matches(item, config)),
+        None,
+    )
 
 
-def _reservation_train_no(reservation):
-    return str(getattr(reservation, "train_no", "") or "").strip()
+def _raw_rows(value):
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from _raw_rows(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _raw_rows(child)
+
+
+def _has_paid_ticket(client, config, train_no=""):
+    history = client.get_reservation_history().trains
+    if any(
+        _history_matches(item, config, train_no)
+        and (item.payment_flag == "Y" or item.settlement_flag == "Y")
+        for item in history
+    ):
+        return True
+    raw = client.get_ticket_list().raw
+    for row in _raw_rows(raw):
+        if (
+            str(row.get("h_dpt_dt") or row.get("h_run_dt") or "") == config["date"]
+            and str(row.get("h_dpt_rs_stn_nm") or "") == config["dep"]
+            and str(row.get("h_arv_rs_stn_nm") or "") == config["arr"]
+            and config["timeFrom"] <= str(row.get("h_dpt_tm") or "") <= config["timeTo"]
+            and (not train_no or str(row.get("h_trn_no") or "") == str(train_no))
+        ):
+            return True
+    return False
 
 
 def _find_candidate(client, config):
-    passengers = [AdultPassenger(count=config["passengers"])]
-    try:
-        trains = client.search_train_allday(
-            config["dep"],
-            config["arr"],
-            config["date"],
-            config["timeFrom"],
-            passengers=passengers,
-            include_no_seats=True,
-        )
-    except NoResultsError:
-        return None
-
-    for train in trains:
-        if not (config["timeFrom"] <= train.dep_time <= config["timeTo"]):
-            continue
-        available = train.has_special_seat() if config["special"] else train.has_general_seat()
-        if available:
-            return train
-    return None
+    query = TrainSearchQuery(
+        config["depCode"],
+        config["arrCode"],
+        config["date"],
+        departure_time=config["timeFrom"],
+        passengers=config["passengers"],
+        include_srt=True,
+    )
+    continuation = None
+    for _ in range(10):
+        try:
+            result = client.search_trains(query, continuation=continuation)
+        except (KorailNoDirectTrainError, KorailNoResultsError):
+            return None
+        for train in result.trains:
+            departure_time = str(train.departure_time or "")
+            if departure_time > config["timeTo"]:
+                return None
+            code = train.special_reservation_code if config["special"] else train.general_reservation_code
+            if config["timeFrom"] <= departure_time <= config["timeTo"] and code and code != "13":
+                return train
+        continuation = result.next_page()
+        if continuation is None:
+            return None
+    raise KorailProtocolError("KORAIL+ search pagination exceeded 10 pages")
 
 
 def _reserve(client, train, config):
-    passengers = [AdultPassenger(count=config["passengers"])]
-    option = ReserveOption.SPECIAL_ONLY if config["special"] else ReserveOption.GENERAL_FIRST
-    return client.reserve(train, passengers=passengers, option=option)
+    hold = client.reserve(
+        train,
+        consent=MutationConsent(allow_reserve=True, dry_run=False),
+        passengers=KorailPassengerCounts(adult=config["passengers"]),
+        seat_class=KorailSeatClass.SPECIAL if config["special"] else KorailSeatClass.GENERAL,
+    )
+    if not getattr(hold, "pnr_no", None):
+        raise KorailProtocolError("API_CHANGED: KORAIL+ reservation returned no PNR")
+    return hold
 
 
-def _wait(seconds):
-    return _stop.wait(seconds)
+def _reservation_train_no(reservation):
+    if hasattr(reservation, "train_no"):
+        return str(reservation.train_no or "")
+    journeys = getattr(reservation, "journeys", ())
+    return str(journeys[0].train_no or "") if journeys else ""
 
 
-def _wait_payment_interval(seconds):
-    if _stop.is_set():
-        return True
-    triggered = _payment_check.wait(seconds)
-    if _stop.is_set():
-        return True
-    if triggered:
-        _payment_check.clear()
-    return False
+def _payment_deadline(reservation):
+    date_value = str(getattr(reservation, "payment_deadline_date", "") or "")
+    time_value = str(getattr(reservation, "payment_deadline_time", "") or "")
+    if len(time_value) == 4:
+        time_value += "00"
+    return datetime.strptime(date_value + time_value, "%Y%m%d%H%M%S")
+
+
+def _deadline_text(reservation):
+    date_value = str(getattr(reservation, "payment_deadline_date", "") or "")
+    time_value = str(getattr(reservation, "payment_deadline_time", "") or "")
+    return f"{date_value} {time_value}".strip()
 
 
 def _safe_error(error, config):
@@ -198,203 +198,50 @@ def _safe_error(error, config):
     return message[:180]
 
 
-def _ticket_matches_config(ticket, config, train_no=""):
-    return (
-        ticket.dep_date == config["date"]
-        and ticket.dep_name == config["dep"]
-        and ticket.arr_name == config["arr"]
-        and (not config.get("depCode") or getattr(ticket, "dep_code", "") == config["depCode"])
-        and (not config.get("arrCode") or getattr(ticket, "arr_code", "") == config["arrCode"])
-        and config["timeFrom"] <= ticket.dep_time <= config["timeTo"]
-        and (not train_no or str(getattr(ticket, "train_no", "")).strip() == train_no)
-    )
+def _is_terminal_error(error):
+    return isinstance(error, _TERMINAL_ERRORS)
 
 
-def verify_payment_json(config_json, callback, train_no=""):
-    """Verify that the reserved route has become a paid KORAIL ticket."""
-    try:
-        config = json.loads(config_json)
-        if not isinstance(config, dict):
-            raise ValueError("잘못된 설정 형식이야")
-        _validate_config(config)
-        client = _login(config)
-        tickets = client.tickets()
-        if any(_ticket_matches_config(ticket, config, str(train_no).strip()) for ticket in tickets):
-            _emit(callback, "KORAIL|결제 확인 완료|발권 목록에서 확인됨")
-        else:
-            _emit(callback, "KORAIL|결제 미확인|공식 결제 화면에서 상태를 확인해")
-    except Exception as error:
-        safe_config = config if "config" in locals() and isinstance(config, dict) else {}
-        _emit(callback, f"KORAIL|결제 확인 실패|{_safe_error(error, safe_config)}")
+def _is_inventory_error(error):
+    return isinstance(error, _INVENTORY_ERRORS)
 
 
-def _payment_deadline(reservation):
-    date_value = str(getattr(reservation, "buy_limit_date", "")).strip()
-    time_value = str(getattr(reservation, "buy_limit_time", "")).strip()
-    if len(time_value) == 4:
-        time_value += "00"
-    return datetime.strptime(date_value + time_value, "%Y%m%d%H%M%S")
-
-
-def _wait_for_payment(client, config, reservation, train_no, callback):
-    """Observe official ticket issuance without attempting payment."""
-    try:
-        deadline = _payment_deadline(reservation)
-    except (TypeError, ValueError):
-        _emit(callback, f"KORAIL|결제 확인 중단|열차번호 {train_no}|결제기한을 읽지 못했어")
-        return
-
-    deadline_text = f"{reservation.buy_limit_date} {reservation.buy_limit_time}"
-    _emit(callback, f"KORAIL|결제 대기|열차번호 {train_no}|결제기한 {deadline_text}")
-    consecutive_errors = 0
-    while not _stop.is_set():
-        remaining = (deadline - datetime.now()).total_seconds()
-        if remaining <= 0:
-            _emit(callback, f"KORAIL|결제 기한 만료|열차번호 {train_no}|결제기한 {deadline_text}")
-            return
-        try:
-            tickets = client.tickets() or []
-            if any(_ticket_matches_config(ticket, config, str(train_no).strip()) for ticket in tickets):
-                _emit(callback, f"KORAIL|결제 확인 완료|열차번호 {train_no}|발권 목록에서 확인됨")
-                return
-            consecutive_errors = 0
-        except Exception as error:
-            consecutive_errors += 1
-            detail = _safe_error(error, config)
-            if consecutive_errors >= _MAX_PAYMENT_ERRORS:
-                _emit(callback, f"KORAIL|결제 확인 중단|열차번호 {train_no}|연속 오류 {_MAX_PAYMENT_ERRORS}회|{detail}")
-                return
-            _emit(callback, f"KORAIL|결제 확인 오류|열차번호 {train_no}|재시도 {consecutive_errors}/{_MAX_PAYMENT_ERRORS}|{detail}")
-        if _wait_payment_interval(min(_PAYMENT_POLL_SECONDS, max(1, int(remaining)))):
-            return
+def _is_ambiguous_mutation_error(error):
+    return isinstance(error, (KorailTransportError, KorailProtocolError))
 
 
 def _validate_config(config):
-    if config.get("operator", "SRT") != "KORAIL":
-        raise ValueError("KORAIL engine received a non-KORAIL profile")
-
-    required = ("srtId", "srtPassword", "dep", "arr", "date", "timeFrom", "timeTo", "depCode", "arrCode")
+    if config.get("operator") != "KORAIL":
+        raise ValueError("KORAIL+ engine received a non-KORAIL profile")
+    required = (
+        "srtId", "srtPassword", "dep", "arr", "date", "timeFrom", "timeTo",
+        "depCode", "arrCode", "deviceId", "osVersion", "deviceModel",
+        "deviceWidth", "deviceHeight", "androidSdkInt",
+    )
     if any(not str(config.get(key, "")).strip() for key in required):
-        raise ValueError("필수 KORAIL 조건이 비어 있어")
-
-    config["date"] = str(config["date"]).strip()
-    config["timeFrom"] = str(config["timeFrom"]).strip()
-    config["timeTo"] = str(config["timeTo"]).strip()
-    try:
-        datetime.strptime(config["date"], "%Y%m%d")
-        datetime.strptime(config["timeFrom"], "%H%M%S")
-        datetime.strptime(config["timeTo"], "%H%M%S")
-    except ValueError as error:
-        raise ValueError("날짜 또는 시간 형식이 잘못됐어") from error
+        raise ValueError("필수 KORAIL+ 조건이 비어 있어")
+    if not re.fullmatch(r"[0-9a-f]{16}", str(config["deviceId"]).lower()):
+        raise ValueError("Android 기기 식별자를 확인하지 못했어")
+    for key, pattern in (("date", r"[0-9]{8}"), ("timeFrom", r"[0-9]{6}"), ("timeTo", r"[0-9]{6}")):
+        if not re.fullmatch(pattern, str(config[key])):
+            raise ValueError("날짜 또는 시간 형식이 잘못됐어")
     if config["timeFrom"] > config["timeTo"]:
         raise ValueError("종료 시각은 시작 시각 이후여야 해")
-
     for key in ("dep", "arr"):
-        station = str(config[key]).strip()
-        if not re.fullmatch(r"[가-힣A-Za-z0-9()·\-\s]{1,30}", station):
+        if not re.fullmatch(r"[가-힣A-Za-z0-9()·\-\s]{1,30}", str(config[key]).strip()):
             raise ValueError("역 이름에 허용되지 않는 문자가 있어")
-        config[key] = station
     if config["dep"] == config["arr"]:
         raise ValueError("출발역과 도착역은 달라야 해")
-    for key in ("depCode", "arrCode"):
-        if not re.fullmatch(r"[0-9]{4}", str(config[key]).strip()):
-            raise ValueError("코레일 역 코드가 잘못됐어")
-        config[key] = str(config[key]).strip()
-
+    if any(not re.fullmatch(r"[0-9]{4}", str(config[key])) for key in ("depCode", "arrCode")):
+        raise ValueError("KORAIL+ 역 코드가 잘못됐어")
     try:
-        passengers = int(config.get("passengers", 0))
+        passengers = int(config["passengers"])
     except (TypeError, ValueError) as error:
         raise ValueError("승객 수가 잘못됐어") from error
-    if passengers < 1:
-        raise ValueError("승객 수는 1명 이상이어야 해")
+    if passengers not in range(1, 10):
+        raise ValueError("승객 수는 1~9명이어야 해")
     config["passengers"] = passengers
-
     if config.get("windowSeat"):
-        raise ValueError("KORAIL 창가 우선은 아직 지원하지 않아")
+        raise ValueError("KORAIL+ 창가 우선은 아직 지원하지 않아")
     if config.get("autoPay"):
-        card_number = re.sub(r"[^0-9]", "", str(config.get("cardNumber", "")))
-        card_password = str(config.get("cardPassword", "")).strip()
-        card_expire = re.sub(r"[^0-9]", "", str(config.get("cardExpire", "")))
-        card_validation = re.sub(r"[^0-9]", "", str(config.get("cardValidation", "")))
-        if len(card_number) not in range(12, 20):
-            raise ValueError("카드번호를 확인해")
-        if not re.fullmatch(r"[0-9]{2}", card_password):
-            raise ValueError("카드 비밀번호 앞 2자리를 입력해")
-        if not re.fullmatch(r"[0-9]{4}", card_expire):
-            raise ValueError("카드 유효기간을 YYMM으로 입력해")
-        if not re.fullmatch(r"[0-9]{6}|[0-9]{10}", card_validation):
-            raise ValueError("카드 인증번호를 확인해")
-        config["cardNumber"] = card_number
-        config["cardPassword"] = card_password
-        config["cardExpire"] = card_expire
-        config["cardValidation"] = card_validation
-
-
-def run_monitor_json(config_json, callback):
-    """Monitor, reserve one KORAIL train, and observe its payment state."""
-    try:
-        config = json.loads(config_json)
-        if not isinstance(config, dict):
-            raise ValueError("설정 형식이 잘못됐어")
-        _validate_config(config)
-    except Exception as error:
-        _emit(callback, f"KORAIL|입력 확인 실패|{_safe_error(error, config if 'config' in locals() and isinstance(config, dict) else {})}")
-        return
-
-    _stop.clear()
-    _payment_check.clear()
-    consecutive_errors = 0
-    poll_min = max(30, int(config.get("pollMin", 30)))
-    poll_max = max(poll_min, int(config.get("pollMax", 60)))
-    client = None
-
-    while not _stop.is_set():
-        try:
-            if client is None:
-                _emit(callback, "KORAIL|로그인 중")
-                client = _login(config)
-                _emit(callback, "KORAIL|로그인 완료")
-                existing = _existing_reservation(client, config)
-                if existing:
-                    train_no = _reservation_train_no(existing)
-                    _emit(
-                        callback,
-                        f"KORAIL|기존 예약 결제 대기|예약번호 {existing.rsv_id}|열차번호 {train_no}|결제기한 {existing.buy_limit_date} {existing.buy_limit_time}",
-                    )
-                    _wait_for_payment(client, config, existing, train_no, callback)
-                    return
-
-            _emit(callback, "KORAIL|열차 조회 중")
-            candidate = _find_candidate(client, config)
-            consecutive_errors = 0
-            if candidate is None:
-                _emit(callback, "KORAIL|좌석 없음|다음 조회 대기")
-                if _wait(random.uniform(poll_min, poll_max)):
-                    return
-                continue
-
-            _emit(callback, f"KORAIL|좌석 발견|{candidate.train_type_name} {candidate.train_no} {candidate.dep_time}")
-            reservation = _reserve(client, candidate, config)
-            _emit(
-                callback,
-                f"KORAIL|예약 완료|결제 필요|예약번호 {reservation.rsv_id}|열차번호 {candidate.train_no}|결제기한 {reservation.buy_limit_date} {reservation.buy_limit_time}",
-            )
-            if config.get("autoPay"):
-                try:
-                    _emit(callback, f"KORAIL|자동결제 시도|열차번호 {candidate.train_no}")
-                    _pay_with_card(client, reservation, config)
-                    _emit(callback, f"KORAIL|자동결제 요청 완료|열차번호 {candidate.train_no}")
-                except Exception as error:
-                    _emit(callback, f"KORAIL|자동결제 실패|{_safe_error(error, config)}")
-            _wait_for_payment(client, config, reservation, candidate.train_no, callback)
-            return
-        except Exception as error:
-            consecutive_errors += 1
-            client = None
-            detail = _safe_error(error, config)
-            if consecutive_errors >= 5:
-                _emit(callback, f"KORAIL|연속 오류 5회|{detail}")
-                return
-            _emit(callback, f"KORAIL|처리 오류|재시도 {consecutive_errors}/5|{detail}")
-            if _wait(random.uniform(poll_min, poll_max)):
-                return
+        raise ValueError("KORAIL+ 자동결제는 0.2.0에서 비활성화됐어")

@@ -12,8 +12,8 @@ android {
         applicationId = "com.chebaka.srtmonitor"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "x86_64")
@@ -42,7 +42,9 @@ chaquopy {
         version = "3.12"
         pip {
             install("SRTrain==2.6.7")
-            install("https://files.pythonhosted.org/packages/44/2c/4251f3b0c0284a82d3939c76ca060a515825deff0d79d487a191dc4fc017/korail2-0.4.0.tar.gz")
+            install("cryptography==42.0.8")
+            install("httpx==0.28.1")
+            install("https://github.com/yakisoba0728/korail-mobile-api/archive/484c294d088080c92264c021d038b27a6efbe532.zip")
         }
     }
 }

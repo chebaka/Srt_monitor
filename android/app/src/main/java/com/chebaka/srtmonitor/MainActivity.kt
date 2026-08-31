@@ -58,15 +58,10 @@ class MainActivity : ComponentActivity() {
     private lateinit var dep: EditText
     private lateinit var arr: EditText
     private lateinit var passengers: EditText
-    private lateinit var cardNumber: EditText
-    private lateinit var cardPassword: EditText
-    private lateinit var cardExpire: EditText
-    private lateinit var cardValidation: EditText
     private lateinit var special: CheckBox
     private lateinit var windowSeat: CheckBox
     private lateinit var autoPay: MaterialSwitch
     private lateinit var profileName: EditText
-    private lateinit var paymentFields: LinearLayout
     private lateinit var routeFromLabel: TextView
     private lateinit var routeToLabel: TextView
     private lateinit var routeMeta: TextView
@@ -75,10 +70,11 @@ class MainActivity : ComponentActivity() {
     private lateinit var dashboard: LinearLayout
     private lateinit var activeCount: TextView
     private var editingMonitorId: String = ""
+    private var migratingFromId: String = ""
     private var selectedAccountId: String = ProfileStore.NEW_ACCOUNT_ID
     private var receiverRegistered = false
 
-    private val railwayOptions = listOf("SRT", "KORAIL")
+    private val railwayOptions = listOf("KORAIL+")
 
     private val srtStationNames = listOf(
         "수서", "동탄", "평택지제", "곡성", "공주", "광주송정", "구례구", "김천(구미)",
@@ -88,7 +84,7 @@ class MainActivity : ComponentActivity() {
     )
 
     @Volatile
-    private var selectedRailway = "SRT"
+    private var selectedRailway = ProfileStore.KORAIL_OPERATOR
 
     @Volatile
     private var korailStationNames = StationRepository.fallbackStations.map { it.name }
@@ -153,6 +149,7 @@ class MainActivity : ComponentActivity() {
         try {
             buildUi()
             loadSavedProfile()
+            showMigrationNotice()
         } catch (error: SecureStoreException) {
             setContentView(text(error.message.orEmpty(), 16f, R.color.srt_on_surface).apply {
                 setPadding(dp(24), dp(32), dp(24), dp(24)); setBackgroundColor(color(R.color.srt_error_surface))
@@ -504,17 +501,16 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun updateRailwayCapabilities() {
-        selectedRailway = railway.text.toString().trim()
-        val isKorail = selectedRailway == "KORAIL"
+        selectedRailway = ProfileStore.KORAIL_OPERATOR
         refreshStationOptions()
         if (::windowSeat.isInitialized) {
-            windowSeat.isEnabled = !isKorail
-            if (isKorail) windowSeat.isChecked = false
+            windowSeat.isEnabled = false
+            windowSeat.isChecked = false
         }
         if (::autoPay.isInitialized) {
-            autoPay.isEnabled = true
-            autoPay.text = if (isKorail) "좌석 발견 시 KORAIL 자동결제" else "좌석 발견 시 SRT 자동결제"
-            updatePaymentVisibility()
+            autoPay.isChecked = false
+            autoPay.isEnabled = false
+            autoPay.text = "자동결제 준비 중"
         }
     }
 
@@ -657,7 +653,7 @@ class MainActivity : ComponentActivity() {
             setPadding(dp(14), 0, 0, 0)
         }
         headerCopy.addView(text("Watch", 24f, R.color.srt_navy, true))
-        headerCopy.addView(text("SRT·KORAIL 좌석 알림 도우미", 13f, R.color.srt_secondary).apply {
+        headerCopy.addView(text("KORAIL+ 좌석 알림 도우미", 13f, R.color.srt_secondary).apply {
             setPadding(0, dp(3), 0, 0)
         })
         header.addView(headerCopy)
@@ -665,13 +661,13 @@ class MainActivity : ComponentActivity() {
         content.addView(buildDashboard())
         content.addView(routePreview())
 
-        content.addView(sectionCard("철도 선택", "SRT 또는 KORAIL을 선택해") {
-            val railwayField = choiceField("철도 운영사", railwayOptions)
+        content.addView(sectionCard("철도", "2026년 9월부터 KORAIL+만 지원") {
+            val railwayField = choiceField("철도 서비스", railwayOptions)
             railway = railwayField.second
-            railway.setText("SRT", false)
-            selectedRailway = "SRT"
+            railway.setText("KORAIL+", false)
+            selectedRailway = ProfileStore.KORAIL_OPERATOR
             railway.setOnItemClickListener { _, _, _, _ ->
-                selectedRailway = railway.text.toString().trim()
+                selectedRailway = ProfileStore.KORAIL_OPERATOR
                 updateRailwayCapabilities()
             }
             addView(railwayField.first)
@@ -690,7 +686,7 @@ class MainActivity : ComponentActivity() {
         })
 
         content.addView(sectionCard("철도 계정", "계정 정보는 기기 안에서 암호화해 저장") {
-            val accounts = store.accounts()
+            val accounts = activeAccounts()
             val labels = accounts.map(::accountLabel) + "새 계정 입력"
             val accountField = choiceField("저장된 계정", labels)
             accountInput = accountField.second
@@ -748,42 +744,25 @@ class MainActivity : ComponentActivity() {
                 layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) }
             }
             special = CheckBox(this@MainActivity).apply { text = "특실"; setTextColor(color(R.color.srt_on_surface)) }
-            windowSeat = CheckBox(this@MainActivity).apply { text = "창측 선호"; setTextColor(color(R.color.srt_on_surface)) }
+            windowSeat = CheckBox(this@MainActivity).apply { text = "창측 선호 (준비 중)"; setTextColor(color(R.color.srt_secondary)); isEnabled = false }
             options.addView(special, LinearLayout.LayoutParams(0, -2, 1f))
             options.addView(windowSeat, LinearLayout.LayoutParams(0, -2, 1f))
             addView(options)
         })
 
-        content.addView(sectionCard("결제 방식", "SRT·KORAIL 자동결제. KORAIL은 모바일 결제 경로를 사용해") {
+        content.addView(sectionCard("결제 방식", "0.2.0에서는 예약 후 KORAIL+ 공식 앱에서 결제") {
             autoPay = MaterialSwitch(this@MainActivity).apply {
-                text = "좌석 발견 시 자동결제"
+                text = "자동결제 준비 중"
                 textSize = 15f
                 setTextColor(color(R.color.srt_on_surface))
-                setOnCheckedChangeListener { _, _ -> updatePaymentVisibility() }
+                isChecked = false
+                isEnabled = false
             }
             addView(autoPay)
-            addView(text("스위치를 켜야 카드정보를 결제에 사용해. KORAIL 자동결제 실패 시 공식 결제 화면으로 전환해.", 12f, R.color.srt_secondary).apply {
+            addView(text("카드정보를 저장하지 않아. 예약 알림에서 공식 결제 화면을 열어 결제해.", 12f, R.color.srt_secondary).apply {
                 setPadding(0, dp(3), 0, 0)
             })
 
-            paymentFields = LinearLayout(this@MainActivity).apply {
-                orientation = LinearLayout.VERTICAL
-                visibility = View.VISIBLE
-            }
-            val number = field("카드번호", password = true, number = true)
-            cardNumber = number.second
-            paymentFields.addView(number.first)
-            val password = field("카드 비밀번호 앞 2자리", password = true, number = true)
-            cardPassword = password.second
-            paymentFields.addView(password.first)
-            val expire = field("유효기간 YYMM", password = true, number = true)
-            cardExpire = expire.second
-            paymentFields.addView(expire.first)
-            val validation = field("개인 생년월일 YYMMDD 또는 법인번호", password = true, number = true)
-            cardValidation = validation.second
-            paymentFields.addView(validation.first)
-            addView(paymentFields)
-            store.accounts().firstOrNull { it.id == selectedAccountId }?.let(::applyAccount)
         })
 
         statusCard = MaterialCardView(this).apply {
@@ -880,16 +859,42 @@ class MainActivity : ComponentActivity() {
             val toggle = MaterialSwitch(this).apply {
                 isChecked = monitor.active
                 contentDescription = "${monitor.name} 활성화"
+                isEnabled = !monitor.legacyReadOnly && store.activationError(monitor) == null
                 setOnCheckedChangeListener { _, checked ->
                     if (checked) confirmStart(monitor) else sendServiceAction(MonitorService.ACTION_STOP_MONITOR, monitor.id)
                 }
             }
             heading.addView(toggle)
             box.addView(heading)
-            val statusText = store.lastStatus(monitor.id)?.second ?: if (monitor.active) "시작 대기" else "중지됨"
-            box.addView(text("${account?.operator ?: "?"} · ${monitor.dep} → ${monitor.arr} · ${monitor.date}\n$statusText", 12f, R.color.srt_secondary))
+            val statusText = when {
+                monitor.legacyReadOnly -> "읽기 전용 · KORAIL+ 전환 필요"
+                account?.needsReauth == true -> "KORAIL+ 비밀번호 재입력 필요"
+                else -> store.lastStatus(monitor.id)?.second ?: if (monitor.active) "시작 대기" else "중지됨"
+            }
+            val operatorLabel = if (monitor.legacyReadOnly) "SRT 레거시" else "KORAIL+"
+            box.addView(text("$operatorLabel · ${monitor.dep} → ${monitor.arr} · ${monitor.date}\n$statusText", 12f, R.color.srt_secondary))
             val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            actions.addView(secondaryButton("편집") { loadProfile(monitor.name) }, LinearLayout.LayoutParams(0, dp(42), 1f).apply { rightMargin = dp(4) })
+            val uncertain = store.lastStatus(monitor.id)?.first in setOf("RESERVE_IN_FLIGHT", "UNCERTAIN")
+            val editLabel = when {
+                monitor.legacyReadOnly && monitors.any { it.migratedFromId == monitor.id } -> "전환 완료"
+                monitor.legacyReadOnly -> "KORAIL+로 복사"
+                uncertain -> "공식 확인 완료"
+                else -> "편집"
+            }
+            actions.addView(secondaryButton(editLabel) {
+                when {
+                    monitor.legacyReadOnly && monitors.none { it.migratedFromId == monitor.id } -> prepareMigration(monitor)
+                    uncertain -> AlertDialog.Builder(this@MainActivity)
+                        .setTitle("예약내역 확인")
+                        .setMessage("KORAIL+ 공식 앱에서 중복 예약이나 발권이 없는지 확인했어?")
+                        .setNegativeButton("취소", null)
+                        .setPositiveButton("확인했어") { _, _ ->
+                            store.clearReservationUncertainty(monitor.id)
+                            refreshDashboard()
+                        }.show()
+                    !monitor.legacyReadOnly -> loadProfile(monitor.name)
+                }
+            }.apply { isEnabled = editLabel != "전환 완료" }, LinearLayout.LayoutParams(0, dp(42), 1f).apply { rightMargin = dp(4) })
             actions.addView(secondaryButton("삭제") {
                 if (store.deleteMonitor(monitor.id)) refreshDashboard()
                 else AlertDialog.Builder(this@MainActivity).setMessage("활성 감시는 먼저 중지해").setPositiveButton("확인", null).show()
@@ -900,6 +905,11 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun confirmStart(monitor: MonitorDefinition) {
+        store.activationError(monitor)?.let {
+            AlertDialog.Builder(this).setTitle("시작 불가").setMessage(it).setPositiveButton("확인", null).show()
+            refreshDashboard()
+            return
+        }
         if (store.overlaps(monitor)) {
             AlertDialog.Builder(this).setTitle("중복 예약 가능성")
                 .setMessage("같은 계정의 날짜·노선·시간이 겹치는 감시가 실행 중이야. 계속할까?")
@@ -909,7 +919,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun confirmStartAll() {
-        val all = store.monitors()
+        val all = store.monitors().filter { store.activationError(it) == null }
         val overlaps = all.indices.any { i -> (i + 1 until all.size).any { j ->
             val a = all[i]; val b = all[j]
             a.accountId == b.accountId && a.date == b.date && a.dep == b.dep && a.arr == b.arr &&
@@ -930,28 +940,61 @@ class MainActivity : ComponentActivity() {
         ContextCompat.startForegroundService(this, intent)
     }
 
+    private fun prepareMigration(source: MonitorDefinition) {
+        if (!source.legacyReadOnly) return
+        if (store.monitors().any { it.migratedFromId == source.id }) {
+            renderStatus("이미 KORAIL+로 전환했어")
+            return
+        }
+        editingMonitorId = ""
+        migratingFromId = source.id
+        val existingNames = store.monitors().map { it.name }.toSet()
+        val base = "${source.name} KORAIL+"
+        var targetName = base
+        var suffix = 2
+        while (targetName in existingNames) targetName = "$base $suffix".also { suffix += 1 }
+        profileName.setText(targetName)
+        activeAccounts().firstOrNull()?.let(::applyAccount) ?: selectNewAccount()
+        dep.setText(source.dep); arr.setText(source.arr); date.setText(source.date)
+        timeFrom.setText(source.timeFrom); timeTo.setText(source.timeTo)
+        passengers.setText(source.passengers.toString()); special.isChecked = source.special
+        windowSeat.isChecked = false; autoPay.isChecked = false
+        updateRoutePreview()
+        renderStatus("조건 복사 완료 · KORAIL+ 계정과 역을 확인해")
+    }
+
+    private fun showMigrationNotice() {
+        if (!store.migrationNoticePending()) return
+        val legacy = store.monitors().count { it.legacyReadOnly }
+        val reauth = activeAccounts().count { it.needsReauth }
+        AlertDialog.Builder(this)
+            .setTitle("KORAIL+ 전환 완료")
+            .setMessage("SRT 읽기 전용 감시 ${legacy}개 · 비밀번호 재입력 계정 ${reauth}개\n모든 감시와 자동결제를 중지했고 카드정보를 삭제했어.")
+            .setPositiveButton("확인") { _, _ -> store.dismissMigrationNotice() }
+            .setCancelable(false)
+            .show()
+    }
+
     private fun clearMonitorForm() {
         editingMonitorId = ""
+        migratingFromId = ""
         profileName.setText("")
-        store.accounts().firstOrNull()?.let(::applyAccount) ?: selectNewAccount()
+        activeAccounts().firstOrNull()?.let(::applyAccount) ?: selectNewAccount()
         dep.setText(""); arr.setText(""); date.setText(""); timeFrom.setText(""); timeTo.setText("")
         passengers.setText("1"); special.isChecked = false; windowSeat.isChecked = false; autoPay.isChecked = false
-        cardNumber.setText(""); cardPassword.setText(""); cardExpire.setText(""); cardValidation.setText("")
         renderStatus("새 감시 입력 중")
     }
 
     private fun accountLabel(account: RailAccount): String =
-        "${account.name} · ${account.operator} · ${account.loginId.takeLast(4)}"
+        "${account.name} · KORAIL+ · ${account.loginId.takeLast(4)}"
+
+    private fun activeAccounts(): List<RailAccount> = store.accounts().filter { it.operator == ProfileStore.KORAIL_OPERATOR }
 
     private fun applyAccount(account: RailAccount) {
         selectedAccountId = account.id
         if (::accountInput.isInitialized) accountInput.setText(accountLabel(account), false)
-        railway.setText(account.operator, false); selectedRailway = account.operator
-        srtId.setText(account.loginId); srtPassword.setText(account.password)
-        if (::cardNumber.isInitialized) {
-            cardNumber.setText(account.cardNumber); cardPassword.setText(account.cardPassword)
-            cardExpire.setText(account.cardExpire); cardValidation.setText(account.cardValidation)
-        }
+        railway.setText("KORAIL+", false); selectedRailway = ProfileStore.KORAIL_OPERATOR
+        srtId.setText(account.loginId); srtPassword.setText(if (account.needsReauth) "" else account.password)
         updateRailwayCapabilities()
     }
 
@@ -959,9 +1002,6 @@ class MainActivity : ComponentActivity() {
         selectedAccountId = ProfileStore.NEW_ACCOUNT_ID
         if (::accountInput.isInitialized) accountInput.setText("새 계정 입력", false)
         if (::srtId.isInitialized) { srtId.setText(""); srtPassword.setText("") }
-        if (::cardNumber.isInitialized) {
-            cardNumber.setText(""); cardPassword.setText(""); cardExpire.setText(""); cardValidation.setText("")
-        }
     }
 
     private fun showAccounts() {
@@ -970,13 +1010,13 @@ class MainActivity : ComponentActivity() {
             AlertDialog.Builder(this).setTitle("계정 관리").setMessage("저장된 계정 없음. 감시를 저장하면 계정도 암호화 저장돼.").setPositiveButton("확인", null).show()
             return
         }
-        val labels = accounts.map { "${it.name} · ${it.operator} · ${it.loginId.takeLast(4)}" }.toTypedArray()
+        val labels = accounts.map { accountLabel(it).replace("KORAIL+", if (it.operator == ProfileStore.KORAIL_OPERATOR) "KORAIL+" else "SRT 레거시") }.toTypedArray()
         AlertDialog.Builder(this).setTitle("계정 관리")
             .setItems(labels) { _, index ->
                 val account = accounts[index]
                 val used = store.monitors().count { it.accountId == account.id }
                 AlertDialog.Builder(this).setTitle(account.name)
-                    .setMessage("연결된 감시 ${used}개\n계정 수정은 연결된 감시를 편집해 저장하면 반영돼.")
+                    .setMessage("연결된 감시 ${used}개\n${if (account.operator == ProfileStore.KORAIL_OPERATOR) "계정 수정은 연결된 감시를 편집해 저장하면 반영돼." else "SRT 계정정보는 삭제됐고 읽기 전용이야."}")
                     .setNegativeButton("닫기", null)
                     .setPositiveButton("미사용 계정 삭제") { _, _ ->
                         if (!store.deleteAccount(account.id)) AlertDialog.Builder(this).setMessage("연결된 감시가 있어 삭제할 수 없어").setPositiveButton("확인", null).show()
@@ -1012,12 +1052,6 @@ class MainActivity : ComponentActivity() {
         setOnClickListener { action() }
     }
 
-    private fun updatePaymentVisibility() {
-        if (::paymentFields.isInitialized) {
-            paymentFields.visibility = View.VISIBLE
-        }
-    }
-
     private fun renderStatus(message: String) {
         if (!::status.isInitialized) return
         status.text = message
@@ -1035,20 +1069,36 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun loadProfile(name: String) {
-        val c = store.load(name) ?: return
+        val monitor = store.monitors().firstOrNull { it.name == name } ?: return
+        if (monitor.legacyReadOnly) {
+            prepareMigration(monitor)
+            return
+        }
+        val c = store.configFor(monitor) ?: run {
+            val account = store.accounts().firstOrNull { it.id == monitor.accountId } ?: return
+            editingMonitorId = monitor.id
+            migratingFromId = monitor.migratedFromId
+            profileName.setText(monitor.name)
+            applyAccount(account)
+            dep.setText(monitor.dep); arr.setText(monitor.arr); date.setText(monitor.date)
+            timeFrom.setText(monitor.timeFrom); timeTo.setText(monitor.timeTo); passengers.setText(monitor.passengers.toString())
+            special.isChecked = monitor.special
+            renderStatus("KORAIL+ 비밀번호를 다시 입력해")
+            updateRoutePreview()
+            return
+        }
         editingMonitorId = c.monitorId
+        migratingFromId = c.migratedFromId
         store.setActiveProfile(name)
         profileName.setText(name)
-        railway.setText(c.operator, false)
-        selectedRailway = c.operator
+        railway.setText("KORAIL+", false)
+        selectedRailway = ProfileStore.KORAIL_OPERATOR
         store.accounts().firstOrNull { it.id == c.accountId }?.let(::applyAccount)
         srtId.setText(c.srtId); srtPassword.setText(c.srtPassword); dep.setText(c.dep); arr.setText(c.arr)
         date.setText(c.date); timeFrom.setText(c.timeFrom); timeTo.setText(c.timeTo); passengers.setText(c.passengers.toString())
-        special.isChecked = c.special; windowSeat.isChecked = c.windowSeat; autoPay.isChecked = c.autoPay
-        cardNumber.setText(c.cardNumber); cardPassword.setText(c.cardPassword); cardExpire.setText(c.cardExpire); cardValidation.setText(c.cardValidation)
+        special.isChecked = c.special; windowSeat.isChecked = false; autoPay.isChecked = false
         rememberStation(c.dep); rememberStation(c.arr)
         updateRailwayCapabilities()
-        updatePaymentVisibility()
         updateRoutePreview()
     }
 
@@ -1061,38 +1111,27 @@ class MainActivity : ComponentActivity() {
         val dateValue = date.text.toString()
         val fromValue = timeFrom.text.toString()
         val toValue = timeTo.text.toString()
-        val operatorValue = railway.text.toString().trim()
+        val operatorValue = ProfileStore.KORAIL_OPERATOR
         val departureCode = stationCode(departure)
         val arrivalCode = stationCode(arrival)
         val passengerCount = passengers.text.toString().toIntOrNull()
-        val normalizedCard = cardNumber.text.toString().filter { it.isDigit() }
 
         require(name.length <= 40) { "프로필 이름은 40자 이내로 입력해" }
-        require(operatorValue in railwayOptions) { "철도 운영사를 선택해" }
-        if (operatorValue == "KORAIL") {
-            require(departureCode.matches(Regex("[0-9]{4}")) && arrivalCode.matches(Regex("[0-9]{4}"))) { "코레일 역 목록에서 출발역과 도착역을 선택해" }
-        }
+        require(railway.text.toString().trim() in railwayOptions) { "KORAIL+를 선택해" }
+        require(departureCode.matches(Regex("[0-9]{4}")) && arrivalCode.matches(Regex("[0-9]{4}"))) { "KORAIL+ 역 목록에서 출발역과 도착역을 선택해" }
         require(id.isNotEmpty() && password.isNotEmpty()) { "철도 계정과 비밀번호를 입력해" }
         require(departure.isNotEmpty() && arrival.isNotEmpty() && departure != arrival) { "출발역과 도착역을 확인해" }
         require(dateValue.matches(Regex("[0-9]{8}"))) { "탑승 날짜를 선택해" }
         require(fromValue.matches(Regex("[0-9]{6}")) && toValue.matches(Regex("[0-9]{6}"))) { "조회 시간을 선택해" }
         require(fromValue <= toValue) { "종료 시각은 시작 시각 이후여야 해" }
         require(passengerCount != null && passengerCount > 0) { "성인 인원은 1명 이상 입력해" }
-        require(!windowSeat.isChecked || operatorValue == "SRT") { "KORAIL 창가 우선은 아직 지원하지 않아" }
-        if (autoPay.isChecked) {
-            require(normalizedCard.length in 12..19) { "카드번호를 확인해" }
-            require(cardPassword.text.toString().matches(Regex("[0-9]{2}"))) { "카드 비밀번호 앞 2자리를 입력해" }
-            require(cardExpire.text.toString().matches(Regex("[0-9]{4}"))) { "카드 유효기간을 YYMM으로 입력해" }
-            require(cardValidation.text.toString().matches(Regex("[0-9]{6}|[0-9]{10}"))) { "카드 인증번호를 확인해" }
-        }
 
         return MonitorConfig(
             id, password, departure, arrival, dateValue, fromValue, toValue,
-            passengerCount, special.isChecked, windowSeat.isChecked, 30, 60,
-            autoPay.isChecked, normalizedCard, cardPassword.text.toString(),
-            cardExpire.text.toString(), cardValidation.text.toString(), operator = operatorValue,
+            passengerCount, special.isChecked, false, 30, 60,
+            false, "", "", "", "", operator = operatorValue,
             depCode = departureCode, arrCode = arrivalCode, monitorId = editingMonitorId,
-            accountId = selectedAccountId
+            accountId = selectedAccountId, migratedFromId = migratingFromId
         )
     }
 
@@ -1144,7 +1183,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun createChannel() {
-        if (Build.VERSION.SDK_INT >= 26) getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel("srt_monitor", "SRT 모니터링", NotificationManager.IMPORTANCE_HIGH))
+        if (Build.VERSION.SDK_INT >= 26) getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel("srt_monitor", "KORAIL+ 모니터링", NotificationManager.IMPORTANCE_HIGH))
     }
 
     private fun requestNotificationPermission() {
