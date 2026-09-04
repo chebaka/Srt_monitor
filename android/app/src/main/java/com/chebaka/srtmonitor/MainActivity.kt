@@ -750,16 +750,16 @@ class MainActivity : ComponentActivity() {
             addView(options)
         })
 
-        content.addView(sectionCard("결제 방식", "0.2.0에서는 예약 후 KORAIL+ 공식 앱에서 결제") {
+        content.addView(sectionCard("동작 방식", "좌석 조회와 알림만 제공") {
             autoPay = MaterialSwitch(this@MainActivity).apply {
-                text = "자동결제 준비 중"
+                text = "자동 예약 비활성화"
                 textSize = 15f
                 setTextColor(color(R.color.srt_on_surface))
                 isChecked = false
                 isEnabled = false
             }
             addView(autoPay)
-            addView(text("카드정보를 저장하지 않아. 예약 알림에서 공식 결제 화면을 열어 결제해.", 12f, R.color.srt_secondary).apply {
+            addView(text("좌석을 찾으면 알림만 보내. 예매는 KORAIL+ 공식 앱에서 진행해.", 12f, R.color.srt_secondary).apply {
                 setPadding(0, dp(3), 0, 0)
             })
 
@@ -911,7 +911,7 @@ class MainActivity : ComponentActivity() {
             return
         }
         if (store.overlaps(monitor)) {
-            AlertDialog.Builder(this).setTitle("중복 예약 가능성")
+            AlertDialog.Builder(this).setTitle("중복 감시")
                 .setMessage("같은 계정의 날짜·노선·시간이 겹치는 감시가 실행 중이야. 계속할까?")
                 .setNegativeButton("취소") { _, _ -> refreshDashboard() }
                 .setPositiveButton("계속") { _, _ -> sendServiceAction(MonitorService.ACTION_START_MONITOR, monitor.id) }.show()
@@ -925,7 +925,7 @@ class MainActivity : ComponentActivity() {
             a.accountId == b.accountId && a.date == b.date && a.dep == b.dep && a.arr == b.arr &&
                 a.timeFrom <= b.timeTo && b.timeFrom <= a.timeTo
         } }
-        if (overlaps) AlertDialog.Builder(this).setTitle("중복 예약 가능성")
+        if (overlaps) AlertDialog.Builder(this).setTitle("중복 감시")
             .setMessage("겹치는 감시가 있어. 최대 5개를 계속 시작할까?")
             .setNegativeButton("취소", null)
             .setPositiveButton("계속") { _, _ -> sendServiceAction(MonitorService.ACTION_START_ALL) }.show()
@@ -1058,7 +1058,7 @@ class MainActivity : ComponentActivity() {
         val surface = when {
             message.contains("실패") || message.contains("오류") || message.contains("입력 확인") -> R.color.srt_error_surface
             message.contains("다음 조회 대기") || message.contains("확인해") || message.contains("결제 필요") -> R.color.srt_warning_surface
-            message.contains("완료") || message.contains("성공") || message.contains("예약 발견") -> R.color.srt_success_surface
+            message.contains("완료") || message.contains("성공") || message.contains("좌석 발견") -> R.color.srt_success_surface
             else -> R.color.srt_surface_soft
         }
         statusCard.setCardBackgroundColor(color(surface))
@@ -1102,9 +1102,16 @@ class MainActivity : ComponentActivity() {
         updateRoutePreview()
     }
 
+    private fun normalizeLoginId(value: String): String {
+        val trimmed = value.trim()
+        if ("@" in trimmed) return trimmed
+        val compact = trimmed.replace(Regex("[\\s-]"), "")
+        return if (compact.matches(Regex("[0-9]+"))) compact else trimmed
+    }
+
     private fun config(): MonitorConfig {
         val name = profileName.text.toString().trim().ifEmpty { "기본" }
-        val id = srtId.text.toString().trim()
+        val id = normalizeLoginId(srtId.text.toString())
         val password = srtPassword.text.toString()
         val departure = dep.text.toString().trim()
         val arrival = arr.text.toString().trim()
@@ -1169,7 +1176,7 @@ class MainActivity : ComponentActivity() {
         catch (error: SecureStoreException) { renderStatus(error.message.orEmpty()); return }
         editingMonitorId = monitor.id
         confirmStart(monitor)
-        renderStatus("로그인 준비 중")
+        renderStatus("로그인 확인 요청됨 · 서버 응답 대기")
     }
 
     private fun pickDate() {

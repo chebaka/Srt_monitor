@@ -1,21 +1,26 @@
-"""Shared-account multi-monitor scheduler.
+"""Read-only shared-account multi-monitor scheduler."""
 
-One invocation owns one authenticated rail account. It checks that account's
-monitors sequentially while separate invocations may run for other accounts.
-"""
 import json
 import random
 import threading
 import time
-from datetime import datetime
 
 import korail_engine
 
 
 _lock = threading.Lock()
 _stopped = set()
-_payment_checks = set()
 _wake = threading.Event()
+_TERMINAL_CODES = frozenset({
+    "API_INCOMPATIBLE",
+    "AUTH_REJECTED",
+    "AUTH_REQUIRED",
+    "AUTH_UNVERIFIED",
+    "ERROR",
+    "LEGACY_DISABLED",
+    "SEAT_FOUND",
+    "STOPPED",
+})
 
 
 def stop_monitors(ids_json):
@@ -26,9 +31,8 @@ def stop_monitors(ids_json):
 
 
 def request_payment_check(monitor_id):
-    with _lock:
-        _payment_checks.add(str(monitor_id))
-    _wake.set()
+    # Kept for Android service compatibility. Monitoring mode has no payment state.
+    return None
 
 
 def _is_stopped(monitor_id):
@@ -36,22 +40,14 @@ def _is_stopped(monitor_id):
         return monitor_id in _stopped
 
 
-def _consume_payment_check(monitor_id):
-    with _lock:
-        if monitor_id not in _payment_checks:
-            return False
-        _payment_checks.remove(monitor_id)
-        return True
-
-
-def _emit(callback, monitor_id, code, message, train_no="", deadline=""):
+def _emit(callback, monitor_id, code, message, train_no=""):
     payload = json.dumps({
         "monitorId": monitor_id,
         "statusCode": code,
-        "terminal": code in ("COMPLETED", "ERROR", "EXPIRED", "STOPPED", "UNCERTAIN", "LEGACY_DISABLED"),
+        "terminal": code in _TERMINAL_CODES,
         "message": str(message)[:300],
         "trainNo": str(train_no),
-        "deadline": str(deadline),
+        "deadline": "",
     }, ensure_ascii=False)
     try:
         callback.onStatus(payload)
@@ -59,97 +55,73 @@ def _emit(callback, monitor_id, code, message, train_no="", deadline=""):
         pass
 
 
-def _finish(states, monitor_id, callback, code, message, train_no="", deadline=""):
-    _emit(callback, monitor_id, code, message, train_no, deadline)
+def _finish(states, monitor_id, callback, code, message, train_no=""):
+    _emit(callback, monitor_id, code, message, train_no)
     states.pop(monitor_id, None)
 
 
-def _safe(module, error, config):
-    return module._safe_error(error, config)
+def _finish_all(states, callback, code, message):
+    for monitor_id in list(states):
+        _finish(states, monitor_id, callback, code, message)
 
 
-def _korail_deadline(reservation):
-    text = korail_engine._deadline_text(reservation)
-    return korail_engine._payment_deadline(reservation), text
+def _safe(error, config):
+    return korail_engine._safe_error(error, config)
 
 
-def _check_korail_payment(client, state, callback):
-    config = state["config"]
-    monitor_id = config["monitorId"]
-    reservation = state["reservation"]
-    train_no = state["trainNo"]
-    deadline, deadline_text = _korail_deadline(reservation)
-    if datetime.now() >= deadline:
-        return "EXPIRED", "결제 기한 만료", deadline_text
-    try:
-        if korail_engine._has_paid_ticket(client, config, train_no):
-            return "COMPLETED", "결제 확인 완료", deadline_text
-        state["errors"] = 0
-        _emit(callback, monitor_id, "PAYMENT_PENDING", "결제 대기", train_no, deadline_text)
-    except Exception as error:
-        state["errors"] += 1
-        if state["errors"] >= 5:
-            return "ERROR", f"결제 확인 연속 오류 5회: {_safe(korail_engine, error, config)}", deadline_text
-        _emit(callback, monitor_id, "PAYMENT_PENDING", f"결제 확인 오류 {state['errors']}/5", train_no, deadline_text)
-    state["next"] = time.monotonic() + 60
-    return None
-
-
-def _set_korail_waiting(state, reservation, train_no, callback, existing=False):
-    state["reservation"] = reservation
-    state["trainNo"] = str(train_no)
-    state["next"] = time.monotonic()
-    _, deadline_text = _korail_deadline(reservation)
-    label = "기존 예약 결제 대기" if existing else "예약 완료 · KORAIL+에서 결제 필요"
-    _emit(callback, state["config"]["monitorId"], "PAYMENT_PENDING", label, train_no, deadline_text)
+def _next_check(state):
+    state["next"] = time.monotonic() + random.uniform(
+        state["pollMin"], state["pollMax"]
+    )
 
 
 def _process_korail(client, state, states, callback):
     config = state["config"]
     monitor_id = config["monitorId"]
-    if state.get("reservation") is not None:
-        result = _check_korail_payment(client, state, callback)
-        if result:
-            code, message, deadline = result
-            _finish(states, monitor_id, callback, code, message, state["trainNo"], deadline)
-        return
-    if not state["existingChecked"]:
-        if korail_engine._has_paid_ticket(client, config):
-            _finish(states, monitor_id, callback, "COMPLETED", "조건에 맞는 기존 발권이 있어")
-            return
-        existing = korail_engine._existing_reservation(client, config)
-        if existing:
-            _finish(states, monitor_id, callback, "UNCERTAIN", "조건에 맞는 기존 예약이 있어 · KORAIL+에서 확인해", korail_engine._reservation_train_no(existing))
-            return
-        state["existingChecked"] = True
     _emit(callback, monitor_id, "SEARCHING", "KORAIL+ 열차 조회 중")
-    candidate = korail_engine._find_candidate(client, config)
+    result_code, candidate = korail_engine._find_candidate(client, config)
     if _is_stopped(monitor_id):
         _finish(states, monitor_id, callback, "STOPPED", "감시 중지")
         return
     state["errors"] = 0
-    if candidate is None:
-        _emit(callback, monitor_id, "WAITING", "좌석 없음 · 다음 조회 대기")
-        state["next"] = time.monotonic() + random.uniform(state["pollMin"], state["pollMax"])
+    if result_code == "SEAT_FOUND":
+        train_no = str(candidate.train_no or "")
+        _finish(
+            states,
+            monitor_id,
+            callback,
+            "SEAT_FOUND",
+            "예약 가능한 좌석 발견 · KORAIL+에서 예매해",
+            train_no,
+        )
         return
-    train_no = candidate.train_no
-    _emit(callback, monitor_id, "RESERVING", "좌석 발견 · 예약 시도", train_no)
-    if _is_stopped(monitor_id):
-        _finish(states, monitor_id, callback, "STOPPED", "감시 중지")
-        return
-    _emit(callback, monitor_id, "RESERVE_IN_FLIGHT", "예약 요청 전송 중 · 결과 확인 전 재시도 금지", train_no)
-    try:
-        reservation = korail_engine._reserve(client, candidate, config)
-    except Exception as error:
-        if korail_engine._is_ambiguous_mutation_error(error):
-            _finish(states, monitor_id, callback, "UNCERTAIN", "예약 요청 결과 불명 · KORAIL+ 예약내역을 확인해", train_no)
-            return
-        if korail_engine._is_inventory_error(error):
-            _emit(callback, monitor_id, "WAITING", "좌석 선점 실패 · 다음 조회 대기", train_no)
-            state["next"] = time.monotonic() + random.uniform(state["pollMin"], state["pollMax"])
-            return
-        raise
-    _set_korail_waiting(state, reservation, train_no, callback)
+    if result_code == "SOLD_OUT":
+        _emit(callback, monitor_id, "SOLD_OUT", "조건 내 열차 매진 · 다음 조회 대기")
+    elif result_code == "CABIN_UNAVAILABLE":
+        _emit(
+            callback,
+            monitor_id,
+            "CABIN_UNAVAILABLE",
+            "선택 객실이 없는 열차뿐이야 · 다음 조회 대기",
+        )
+    else:
+        _emit(
+            callback,
+            monitor_id,
+            "NO_MATCHING_TRAIN",
+            "조건에 맞는 열차 없음 · 다음 조회 대기",
+        )
+    _next_check(state)
+
+
+def _same_account(configs):
+    first_id, _ = korail_engine._normalize_login_id(configs[0].get("srtId"))
+    first_password = str(configs[0].get("srtPassword", ""))
+    return all(
+        korail_engine._normalize_login_id(item.get("srtId"))[0] == first_id
+        and str(item.get("srtPassword", "")) == first_password
+        for item in configs
+    )
 
 
 def run_account_json(configs_json, callback):
@@ -159,11 +131,15 @@ def run_account_json(configs_json, callback):
     operator = configs[0].get("operator", "")
     if operator != "KORAIL":
         code = "LEGACY_DISABLED" if operator == "SRT" else "ERROR"
-        message = "기존 SRT 감시는 실행할 수 없어" if operator == "SRT" else "지원하지 않는 철도 운영사야"
+        message = (
+            "기존 SRT 감시는 실행할 수 없어"
+            if operator == "SRT"
+            else "지원하지 않는 철도 운영사야"
+        )
         for config in configs:
             _emit(callback, str(config.get("monitorId", "")), code, message)
         return
-    module = korail_engine
+
     states = {}
     with _lock:
         for config in configs:
@@ -171,19 +147,38 @@ def run_account_json(configs_json, callback):
     for config in configs:
         monitor_id = str(config.get("monitorId", ""))
         try:
-            if not monitor_id or config.get("operator", "") != operator:
+            if not monitor_id or config.get("operator") != operator:
                 raise ValueError("계정 감시 설정이 일치하지 않아")
-            module._validate_config(config)
+            korail_engine._validate_config(config)
             poll_min = max(30, int(config.get("pollMin", 30)))
             states[monitor_id] = {
-                "config": config, "errors": 0, "existingChecked": False,
-                "pollMin": poll_min, "pollMax": max(poll_min, int(config.get("pollMax", 60))),
-                "next": time.monotonic(), "reservation": None, "trainNo": "",
+                "config": config,
+                "errors": 0,
+                "pollMin": poll_min,
+                "pollMax": max(poll_min, int(config.get("pollMax", 60))),
+                "next": time.monotonic(),
             }
-            _emit(callback, monitor_id, "STARTING", "KORAIL+ 감시 시작")
+            _emit(callback, monitor_id, "STARTING", "KORAIL+ 좌석 감시 준비")
         except Exception as error:
-            _emit(callback, monitor_id, "ERROR", f"입력 확인 실패: {_safe(module, error, config)}")
+            _emit(
+                callback,
+                monitor_id,
+                "ERROR",
+                f"입력 확인 실패: {_safe(error, config)}",
+            )
+    if not states:
+        return
+    if not _same_account([state["config"] for state in states.values()]):
+        _finish_all(
+            states,
+            callback,
+            "ERROR",
+            "한 작업에 서로 다른 KORAIL+ 계정을 사용할 수 없어",
+        )
+        return
+
     client = None
+    login_errors = 0
     while states:
         for monitor_id in list(states):
             if _is_stopped(monitor_id):
@@ -191,28 +186,58 @@ def run_account_json(configs_json, callback):
         if not states:
             break
         now = time.monotonic()
-        due = [state for state in states.values() if state["next"] <= now or _consume_payment_check(state["config"]["monitorId"])]
+        due = [state for state in states.values() if state["next"] <= now]
         if not due:
             timeout = min(state["next"] for state in states.values()) - now
             _wake.wait(max(0.05, min(timeout, 60)))
             _wake.clear()
             continue
         if client is None:
+            first = next(iter(states.values()))
             try:
-                _emit(callback, due[0]["config"]["monitorId"], "STARTING", "KORAIL+ 로그인 중")
-                client = module._login(due[0]["config"])
+                for state in states.values():
+                    _emit(
+                        callback,
+                        state["config"]["monitorId"],
+                        "AUTHENTICATING",
+                        "KORAIL+ 로그인 확인 중",
+                    )
+                client = korail_engine._login(first["config"])
+                login_errors = 0
+                for state in states.values():
+                    _emit(
+                        callback,
+                        state["config"]["monitorId"],
+                        "AUTH_VERIFIED",
+                        "KORAIL+ 로그인 확인 완료",
+                    )
             except Exception as error:
-                for state in due:
-                    monitor_id = state["config"]["monitorId"]
-                    if module._is_terminal_error(error):
-                        _finish(states, monitor_id, callback, "ERROR", f"로그인 중단: {_safe(module, error, state['config'])}")
-                        continue
-                    state["errors"] += 1
-                    if state["errors"] >= 5:
-                        _finish(states, monitor_id, callback, "ERROR", f"로그인 연속 오류 5회: {_safe(module, error, state['config'])}")
-                    else:
-                        _emit(callback, monitor_id, "WAITING", f"로그인 오류 · 재시도 {state['errors']}/5")
-                        state["next"] = time.monotonic() + random.uniform(state["pollMin"], state["pollMax"])
+                code = korail_engine._error_code(error)
+                if korail_engine._is_terminal_error(error):
+                    _finish_all(
+                        states,
+                        callback,
+                        code,
+                        f"로그인 중단: {_safe(error, first['config'])}",
+                    )
+                    break
+                login_errors += 1
+                if login_errors >= 5:
+                    _finish_all(
+                        states,
+                        callback,
+                        "ERROR",
+                        f"로그인 연속 오류 5회: {_safe(error, first['config'])}",
+                    )
+                    break
+                for state in states.values():
+                    _emit(
+                        callback,
+                        state["config"]["monitorId"],
+                        "LOGIN_RETRY",
+                        f"로그인 오류 · 재시도 {login_errors}/5",
+                    )
+                    _next_check(state)
                 continue
         for state in due:
             monitor_id = state["config"]["monitorId"]
@@ -224,19 +249,32 @@ def run_account_json(configs_json, callback):
                 if client is not None:
                     client.close()
                 client = None
-                if module._is_terminal_error(error):
-                    _finish(states, monitor_id, callback, "ERROR", f"처리 중단: {_safe(module, error, state['config'])}")
-                    continue
-                if module._is_inventory_error(error):
-                    state["errors"] = 0
-                    _emit(callback, monitor_id, "WAITING", "좌석 선점 실패 · 다음 조회 대기")
-                    state["next"] = time.monotonic() + random.uniform(state["pollMin"], state["pollMax"])
-                    continue
+                code = korail_engine._error_code(error)
+                if korail_engine._is_terminal_error(error):
+                    _finish_all(
+                        states,
+                        callback,
+                        code,
+                        f"조회 중단: {_safe(error, state['config'])}",
+                    )
+                    break
                 state["errors"] += 1
                 if state["errors"] >= 5:
-                    _finish(states, monitor_id, callback, "ERROR", f"연속 오류 5회: {_safe(module, error, state['config'])}")
+                    _finish(
+                        states,
+                        monitor_id,
+                        callback,
+                        "ERROR",
+                        f"조회 연속 오류 5회: {_safe(error, state['config'])}",
+                    )
                 else:
-                    _emit(callback, monitor_id, "WAITING", f"처리 오류 · 재시도 {state['errors']}/5")
-                    state["next"] = time.monotonic() + random.uniform(state["pollMin"], state["pollMax"])
+                    _emit(
+                        callback,
+                        monitor_id,
+                        "SEARCH_RETRY",
+                        f"조회 오류 · 재시도 {state['errors']}/5",
+                    )
+                    _next_check(state)
+                break
     if client is not None:
         client.close()

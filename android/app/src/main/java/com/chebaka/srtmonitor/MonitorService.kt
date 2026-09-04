@@ -229,12 +229,9 @@ class MonitorService : Service() {
 
     private fun summaryNotification(): Notification {
         val active = if (::store.isInitialized) store.monitors().count { it.active } else 0
-        val pending = if (::store.isInitialized) store.monitors().count {
-            store.lastStatus(it.id)?.first == "PAYMENT_PENDING"
-        } else 0
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_srt).setContentTitle("Rail Watch")
-            .setContentText("활성 $active/${ProfileStore.MAX_ACTIVE} · 결제 대기 $pending")
+            .setContentText("활성 좌석 감시 $active/${ProfileStore.MAX_ACTIVE}")
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setOngoing(active > 0).setOnlyAlertOnce(true).build()
     }
@@ -303,7 +300,11 @@ class MonitorService : Service() {
         const val EXTRA_KORAIL_TRAIN_NO = "korail_train_no"
         const val CHANNEL_ID = "srt_monitor"
         const val NOTIFICATION_ID = 1001
-        private val TERMINAL_CODES = setOf("COMPLETED", "ERROR", "EXPIRED", "STOPPED", "UNCERTAIN", "LEGACY_DISABLED")
+        private val TERMINAL_CODES = setOf(
+            "API_INCOMPATIBLE", "AUTH_REJECTED", "AUTH_REQUIRED", "AUTH_UNVERIFIED",
+            "COMPLETED", "ERROR", "EXPIRED", "LEGACY_DISABLED", "SEAT_FOUND",
+            "STOPPED", "UNCERTAIN",
+        )
         private const val KORAIL_PAYMENT_URL = "https://www.korail.com/ticket/reservation/list"
     }
 }
