@@ -264,14 +264,14 @@ class KorailRecoveryTest(unittest.TestCase):
             )
         client.reserve.assert_not_called()
 
-    def test_srt_train_never_enters_generic_reservation(self):
+    def test_unverified_high_speed_train_never_enters_generic_reservation(self):
         candidate = train()
         candidate.train_class_code = "0A"
         client = SimpleNamespace(
             get_reservation_history=unittest.mock.Mock(),
             reserve=unittest.mock.Mock(),
         )
-        with self.assertRaisesRegex(korail_engine.KorailPaymentBlockedError, "SRT"):
+        with self.assertRaisesRegex(korail_engine.KorailPaymentBlockedError, "최신 예약 형식"):
             korail_engine._reserve_and_pay(
                 client, candidate, config(autoPay=True), lambda *_args, **_kwargs: None
             )

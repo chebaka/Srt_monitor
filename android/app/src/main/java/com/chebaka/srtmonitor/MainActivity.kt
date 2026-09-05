@@ -893,7 +893,7 @@ class MainActivity : ComponentActivity() {
                 account?.needsReauth == true -> "KORAIL+ 비밀번호 재입력 필요"
                 else -> store.lastStatus(monitor.id)?.second ?: if (monitor.active) "시작 대기" else "중지됨"
             }
-            val operatorLabel = if (monitor.legacyReadOnly) "SRT 레거시" else "KORAIL+"
+            val operatorLabel = if (monitor.legacyReadOnly) "통합 전 감시" else "KORAIL+"
             val mode = if (monitor.autoPay) "자동결제 · 상한 ${monitor.maxFareWon}원" else "알림"
             box.addView(text("$operatorLabel · $mode · ${monitor.dep} → ${monitor.arr} · ${monitor.date}\n$statusText", 12f, R.color.srt_secondary))
             val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -1017,7 +1017,7 @@ class MainActivity : ComponentActivity() {
         val reauth = activeAccounts().count { it.needsReauth }
         AlertDialog.Builder(this)
             .setTitle("KORAIL+ 전환 완료")
-            .setMessage("SRT 읽기 전용 감시 ${legacy}개 · 비밀번호 재입력 계정 ${reauth}개\n모든 감시와 자동결제를 중지했고 카드정보를 삭제했어.")
+            .setMessage("통합 전 읽기 전용 감시 ${legacy}개 · 비밀번호 재입력 계정 ${reauth}개\n모든 감시와 자동결제를 중지했고 카드정보를 삭제했어.")
             .setPositiveButton("확인") { _, _ -> store.dismissMigrationNotice() }
             .setCancelable(false)
             .show()
@@ -1069,13 +1069,13 @@ class MainActivity : ComponentActivity() {
             AlertDialog.Builder(this).setTitle("계정 관리").setMessage("저장된 계정 없음. 감시를 저장하면 계정도 암호화 저장돼.").setPositiveButton("확인", null).show()
             return
         }
-        val labels = accounts.map { accountLabel(it).replace("KORAIL+", if (it.operator == ProfileStore.KORAIL_OPERATOR) "KORAIL+" else "SRT 레거시") }.toTypedArray()
+        val labels = accounts.map { accountLabel(it).replace("KORAIL+", if (it.operator == ProfileStore.KORAIL_OPERATOR) "KORAIL+" else "통합 전 계정") }.toTypedArray()
         AlertDialog.Builder(this).setTitle("계정 관리")
             .setItems(labels) { _, index ->
                 val account = accounts[index]
                 val used = store.monitors().count { it.accountId == account.id }
                 AlertDialog.Builder(this).setTitle(account.name)
-                    .setMessage("연결된 감시 ${used}개\n${if (account.operator == ProfileStore.KORAIL_OPERATOR) "계정 수정은 연결된 감시를 편집해 저장하면 반영돼." else "SRT 계정정보는 삭제됐고 읽기 전용이야."}")
+                    .setMessage("연결된 감시 ${used}개\n${if (account.operator == ProfileStore.KORAIL_OPERATOR) "계정 수정은 연결된 감시를 편집해 저장하면 반영돼." else "통합 전 계정정보는 삭제됐고 읽기 전용이야."}")
                     .setNegativeButton("닫기", null)
                     .setPositiveButton("미사용 계정 삭제") { _, _ ->
                         if (!store.deleteAccount(account.id)) AlertDialog.Builder(this).setMessage("연결된 감시가 있어 삭제할 수 없어").setPositiveButton("확인", null).show()

@@ -256,7 +256,7 @@ class ProfileStore(context: Context) {
     }
 
     fun activationError(monitor: MonitorDefinition): String? {
-        if (monitor.legacyReadOnly) return "기존 SRT 감시는 실행할 수 없어. KORAIL+로 복사해"
+        if (monitor.legacyReadOnly) return "통합 전 기존 감시는 실행할 수 없어. KORAIL+로 복사해"
         if (lastStatus(monitor.id)?.first in UNCERTAIN_CODES) return "예약 결과가 불명확해. KORAIL+ 예약내역 확인 후 상태를 해제해"
         if (lastStatus(monitor.id)?.first == "PAID") return "이미 결제 완료된 감시야. 새 감시를 만들어"
         val account = accounts().firstOrNull { it.id == monitor.accountId } ?: return "연결된 계정을 찾지 못했어"

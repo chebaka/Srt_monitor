@@ -417,7 +417,7 @@ def _reserve_and_pay(client, train, config, emit, should_stop=lambda: False):
     train_class_code = str(getattr(train, "train_class_code", "00") or "")
     if not train_class_code.isdecimal():
         raise KorailPaymentBlockedError(
-            "SRT 열차는 별도 웹 예약 절차가 필요해 자동 결제를 시작하지 않았어"
+            "이 KORAIL+ 고속열차의 최신 예약 형식을 아직 검증하지 않아 자동 결제를 시작하지 않았어"
         )
     if _has_duplicate(client, train, config):
         raise KorailPaymentBlockedError("같은 열차의 예약 또는 승차권이 이미 있어")

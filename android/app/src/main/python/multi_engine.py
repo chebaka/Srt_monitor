@@ -169,7 +169,7 @@ def run_account_json(configs_json, callback):
     if operator != "KORAIL":
         code = "LEGACY_DISABLED" if operator == "SRT" else "ERROR"
         message = (
-            "기존 SRT 감시는 실행할 수 없어"
+            "통합 전 기존 감시는 실행할 수 없어"
             if operator == "SRT"
             else "지원하지 않는 철도 운영사야"
         )

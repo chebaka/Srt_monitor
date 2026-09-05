@@ -41,7 +41,6 @@ chaquopy {
     defaultConfig {
         version = "3.12"
         pip {
-            install("SRTrain==2.6.7")
             install("cryptography==42.0.8")
             install("httpx==0.28.1")
             install("https://github.com/yakisoba0728/korail-mobile-api/archive/484c294d088080c92264c021d038b27a6efbe532.zip")
