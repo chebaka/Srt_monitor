@@ -414,6 +414,11 @@ def _validate_hold(client, hold, train, config):
 
 def _reserve_and_pay(client, train, config, emit, should_stop=lambda: False):
     attempt_id = uuid.uuid4().hex
+    train_class_code = str(getattr(train, "train_class_code", "00") or "")
+    if not train_class_code.isdecimal():
+        raise KorailPaymentBlockedError(
+            "SRT 열차는 별도 웹 예약 절차가 필요해 자동 결제를 시작하지 않았어"
+        )
     if _has_duplicate(client, train, config):
         raise KorailPaymentBlockedError("같은 열차의 예약 또는 승차권이 이미 있어")
     emit("RESERVE_IN_FLIGHT", "예약 요청 전송 중", attempt_id=attempt_id)

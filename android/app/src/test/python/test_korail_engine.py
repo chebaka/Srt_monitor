@@ -264,6 +264,20 @@ class KorailRecoveryTest(unittest.TestCase):
             )
         client.reserve.assert_not_called()
 
+    def test_srt_train_never_enters_generic_reservation(self):
+        candidate = train()
+        candidate.train_class_code = "0A"
+        client = SimpleNamespace(
+            get_reservation_history=unittest.mock.Mock(),
+            reserve=unittest.mock.Mock(),
+        )
+        with self.assertRaisesRegex(korail_engine.KorailPaymentBlockedError, "SRT"):
+            korail_engine._reserve_and_pay(
+                client, candidate, config(autoPay=True), lambda *_args, **_kwargs: None
+            )
+        client.get_reservation_history.assert_not_called()
+        client.reserve.assert_not_called()
+
     def test_srt_dispatch_is_terminal(self):
         callback = Callback()
         multi_engine.run_account_json(json.dumps([config(operator="SRT")]), callback)
