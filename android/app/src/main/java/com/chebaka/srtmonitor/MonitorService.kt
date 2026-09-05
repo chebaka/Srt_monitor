@@ -44,7 +44,7 @@ class MonitorService : Service() {
         try {
         when (intent?.action) {
             ACTION_START_MONITOR -> intent.getStringExtra(EXTRA_MONITOR_ID)?.let {
-                if (store.setMonitorActive(it, true)) { restartAccountWorker(it); startActiveWorkers() }
+                if (store.setMonitorActive(it, true, intent.getStringExtra(EXTRA_AUTO_PAY_ARM).orEmpty())) { restartAccountWorker(it); startActiveWorkers() }
                 else publishStartError(it)
             }
             ACTION_STOP_MONITOR -> intent.getStringExtra(EXTRA_MONITOR_ID)?.let(::stopMonitor)
@@ -65,7 +65,12 @@ class MonitorService : Service() {
 
     private fun startActiveWorkers() {
         store.monitors().filter {
-            it.active && store.lastStatus(it.id)?.first == "RESERVE_IN_FLIGHT"
+            it.active && store.lastStatus(it.id)?.first in setOf("PAID", "COMPLETED")
+        }.forEach { store.setMonitorActive(it.id, false) }
+        store.monitors().filter {
+            it.active && store.lastStatus(it.id)?.first in setOf(
+                "RESERVE_IN_FLIGHT", "HOLD_CREATED", "PAYMENT_IN_FLIGHT"
+            )
         }.forEach {
             store.setMonitorActive(it.id, false)
             store.updateLastStatus(it.id, "UNCERTAIN", "예약 요청 결과 불명 · KORAIL+ 예약내역 확인 필요")
@@ -192,7 +197,10 @@ class MonitorService : Service() {
             broadcast(id, "STARTING", "감시 구성 갱신 중")
             return
         }
-        store.updateLastStatus(id, code, message)
+        store.updateLastStatus(
+            id, code, message,
+            event.optString("pnr"), event.optInt("amount"), event.optString("attemptId"),
+        )
         broadcast(id, code, message)
         if (terminal) store.setMonitorActive(id, false)
         val monitor = store.monitors().firstOrNull { it.id == id }
@@ -298,11 +306,12 @@ class MonitorService : Service() {
         const val EXTRA_STATUS_CODE = "status_code"
         const val EXTRA_STATUS = "status"
         const val EXTRA_KORAIL_TRAIN_NO = "korail_train_no"
+        const val EXTRA_AUTO_PAY_ARM = "auto_pay_arm"
         const val CHANNEL_ID = "srt_monitor"
         const val NOTIFICATION_ID = 1001
         private val TERMINAL_CODES = setOf(
             "API_INCOMPATIBLE", "AUTH_REJECTED", "AUTH_REQUIRED", "AUTH_UNVERIFIED",
-            "COMPLETED", "ERROR", "EXPIRED", "LEGACY_DISABLED", "SEAT_FOUND",
+            "COMPLETED", "ERROR", "EXPIRED", "LEGACY_DISABLED", "PAID", "SEAT_FOUND",
             "STOPPED", "UNCERTAIN",
         )
         private const val KORAIL_PAYMENT_URL = "https://www.korail.com/ticket/reservation/list"

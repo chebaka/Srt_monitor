@@ -61,6 +61,11 @@ class MainActivity : ComponentActivity() {
     private lateinit var special: CheckBox
     private lateinit var windowSeat: CheckBox
     private lateinit var autoPay: MaterialSwitch
+    private lateinit var maxFareWon: EditText
+    private lateinit var cardNumber: EditText
+    private lateinit var cardPassword: EditText
+    private lateinit var cardExpire: EditText
+    private lateinit var cardValidation: EditText
     private lateinit var profileName: EditText
     private lateinit var routeFromLabel: TextView
     private lateinit var routeToLabel: TextView
@@ -508,9 +513,8 @@ class MainActivity : ComponentActivity() {
             windowSeat.isChecked = false
         }
         if (::autoPay.isInitialized) {
-            autoPay.isChecked = false
-            autoPay.isEnabled = false
-            autoPay.text = "자동결제 준비 중"
+            autoPay.isEnabled = true
+            autoPay.text = "자동 예약 후 카드결제"
         }
     }
 
@@ -750,16 +754,34 @@ class MainActivity : ComponentActivity() {
             addView(options)
         })
 
-        content.addView(sectionCard("동작 방식", "좌석 조회와 알림만 제공") {
+        content.addView(sectionCard("동작 방식", "자동결제는 시작할 때 조건·상한을 다시 승인") {
             autoPay = MaterialSwitch(this@MainActivity).apply {
-                text = "자동 예약 비활성화"
+                text = "자동 예약 후 카드결제"
                 textSize = 15f
                 setTextColor(color(R.color.srt_on_surface))
                 isChecked = false
-                isEnabled = false
             }
             addView(autoPay)
-            addView(text("좌석을 찾으면 알림만 보내. 예매는 KORAIL+ 공식 앱에서 진행해.", 12f, R.color.srt_secondary).apply {
+            val maxFare = field("최대 결제금액 (원)", number = true)
+            maxFareWon = maxFare.second
+            addView(maxFare.first)
+            val number = field("카드번호 (숫자만)", password = true, number = true)
+            cardNumber = number.second
+            addView(number.first)
+            val cardPw = field("카드 비밀번호 앞 2자리", password = true, number = true)
+            cardPassword = cardPw.second
+            addView(cardPw.first)
+            val expire = field("카드 유효기간 YYMM", password = true, number = true)
+            cardExpire = expire.second
+            addView(expire.first)
+            val validation = field("생년월일 YYMMDD / 사업자번호", password = true, number = true)
+            cardValidation = validation.second
+            addView(validation.first)
+            store.accounts().firstOrNull { it.id == selectedAccountId }?.let { account ->
+                cardNumber.setText(account.cardNumber); cardPassword.setText(account.cardPassword)
+                cardExpire.setText(account.cardExpire); cardValidation.setText(account.cardValidation)
+            }
+            addView(text("결제는 정확히 1회만 시도해. 결과가 불명확하면 즉시 멈추고 자동 환불은 하지 않아.", 12f, R.color.srt_secondary).apply {
                 setPadding(0, dp(3), 0, 0)
             })
 
@@ -872,7 +894,8 @@ class MainActivity : ComponentActivity() {
                 else -> store.lastStatus(monitor.id)?.second ?: if (monitor.active) "시작 대기" else "중지됨"
             }
             val operatorLabel = if (monitor.legacyReadOnly) "SRT 레거시" else "KORAIL+"
-            box.addView(text("$operatorLabel · ${monitor.dep} → ${monitor.arr} · ${monitor.date}\n$statusText", 12f, R.color.srt_secondary))
+            val mode = if (monitor.autoPay) "자동결제 · 상한 ${monitor.maxFareWon}원" else "알림"
+            box.addView(text("$operatorLabel · $mode · ${monitor.dep} → ${monitor.arr} · ${monitor.date}\n$statusText", 12f, R.color.srt_secondary))
             val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
             val uncertain = store.lastStatus(monitor.id)?.first in setOf("RESERVE_IN_FLIGHT", "UNCERTAIN")
             val editLabel = when {
@@ -910,12 +933,35 @@ class MainActivity : ComponentActivity() {
             refreshDashboard()
             return
         }
+        if (monitor.autoPay) {
+            val account = store.accounts().firstOrNull { it.id == monitor.accountId } ?: return
+            AlertDialog.Builder(this)
+                .setTitle("자동 예약·결제 승인")
+                .setMessage(
+                    "${monitor.date} ${monitor.timeFrom.take(4)}~${monitor.timeTo.take(4)}\n" +
+                        "${monitor.dep} → ${monitor.arr} · 성인 ${monitor.passengers}명 · ${if (monitor.special) "특실" else "일반실"}\n" +
+                        "최대 ${monitor.maxFareWon}원 · 카드 끝 ${account.cardNumber.takeLast(4)}\n\n" +
+                        "좌석 발견 시 예약과 카드결제를 각각 1회 실행해. 자동 환불은 하지 않아."
+                )
+                .setNegativeButton("취소") { _, _ -> refreshDashboard() }
+                .setPositiveButton("예약·결제 1회 승인") { _, _ ->
+                    val token = store.armAutoPay(monitor.id)
+                    if (token == null) renderStatus("자동결제 승인 정보를 만들지 못했어")
+                    else confirmStartAfterArming(monitor, token)
+                }
+                .show()
+            return
+        }
+        confirmStartAfterArming(monitor)
+    }
+
+    private fun confirmStartAfterArming(monitor: MonitorDefinition, armingToken: String = "") {
         if (store.overlaps(monitor)) {
             AlertDialog.Builder(this).setTitle("중복 감시")
                 .setMessage("같은 계정의 날짜·노선·시간이 겹치는 감시가 실행 중이야. 계속할까?")
                 .setNegativeButton("취소") { _, _ -> refreshDashboard() }
-                .setPositiveButton("계속") { _, _ -> sendServiceAction(MonitorService.ACTION_START_MONITOR, monitor.id) }.show()
-        } else sendServiceAction(MonitorService.ACTION_START_MONITOR, monitor.id)
+                .setPositiveButton("계속") { _, _ -> sendServiceAction(MonitorService.ACTION_START_MONITOR, monitor.id, armingToken) }.show()
+        } else sendServiceAction(MonitorService.ACTION_START_MONITOR, monitor.id, armingToken)
     }
 
     private fun confirmStartAll() {
@@ -932,10 +978,11 @@ class MainActivity : ComponentActivity() {
         else sendServiceAction(MonitorService.ACTION_START_ALL)
     }
 
-    private fun sendServiceAction(action: String, monitorId: String = "") {
+    private fun sendServiceAction(action: String, monitorId: String = "", armingToken: String = "") {
         val intent = Intent(this, MonitorService::class.java).apply {
             this.action = action
             if (monitorId.isNotBlank()) putExtra(MonitorService.EXTRA_MONITOR_ID, monitorId)
+            if (armingToken.isNotBlank()) putExtra(MonitorService.EXTRA_AUTO_PAY_ARM, armingToken)
         }
         ContextCompat.startForegroundService(this, intent)
     }
@@ -959,6 +1006,7 @@ class MainActivity : ComponentActivity() {
         timeFrom.setText(source.timeFrom); timeTo.setText(source.timeTo)
         passengers.setText(source.passengers.toString()); special.isChecked = source.special
         windowSeat.isChecked = false; autoPay.isChecked = false
+        maxFareWon.setText("")
         updateRoutePreview()
         renderStatus("조건 복사 완료 · KORAIL+ 계정과 역을 확인해")
     }
@@ -982,6 +1030,8 @@ class MainActivity : ComponentActivity() {
         activeAccounts().firstOrNull()?.let(::applyAccount) ?: selectNewAccount()
         dep.setText(""); arr.setText(""); date.setText(""); timeFrom.setText(""); timeTo.setText("")
         passengers.setText("1"); special.isChecked = false; windowSeat.isChecked = false; autoPay.isChecked = false
+        maxFareWon.setText(""); cardNumber.setText(""); cardPassword.setText("")
+        cardExpire.setText(""); cardValidation.setText("")
         renderStatus("새 감시 입력 중")
     }
 
@@ -995,13 +1045,22 @@ class MainActivity : ComponentActivity() {
         if (::accountInput.isInitialized) accountInput.setText(accountLabel(account), false)
         railway.setText("KORAIL+", false); selectedRailway = ProfileStore.KORAIL_OPERATOR
         srtId.setText(account.loginId); srtPassword.setText(if (account.needsReauth) "" else account.password)
+        if (::cardNumber.isInitialized) {
+            cardNumber.setText(account.cardNumber); cardPassword.setText(account.cardPassword)
+            cardExpire.setText(account.cardExpire); cardValidation.setText(account.cardValidation)
+        }
         updateRailwayCapabilities()
     }
 
     private fun selectNewAccount() {
         selectedAccountId = ProfileStore.NEW_ACCOUNT_ID
         if (::accountInput.isInitialized) accountInput.setText("새 계정 입력", false)
-        if (::srtId.isInitialized) { srtId.setText(""); srtPassword.setText("") }
+        if (::srtId.isInitialized) {
+            srtId.setText(""); srtPassword.setText("")
+            if (::cardNumber.isInitialized) {
+                cardNumber.setText(""); cardPassword.setText(""); cardExpire.setText(""); cardValidation.setText("")
+            }
+        }
     }
 
     private fun showAccounts() {
@@ -1096,7 +1155,10 @@ class MainActivity : ComponentActivity() {
         store.accounts().firstOrNull { it.id == c.accountId }?.let(::applyAccount)
         srtId.setText(c.srtId); srtPassword.setText(c.srtPassword); dep.setText(c.dep); arr.setText(c.arr)
         date.setText(c.date); timeFrom.setText(c.timeFrom); timeTo.setText(c.timeTo); passengers.setText(c.passengers.toString())
-        special.isChecked = c.special; windowSeat.isChecked = false; autoPay.isChecked = false
+        special.isChecked = c.special; windowSeat.isChecked = false; autoPay.isChecked = c.autoPay
+        maxFareWon.setText(if (c.maxFareWon > 0) c.maxFareWon.toString() else "")
+        cardNumber.setText(c.cardNumber); cardPassword.setText(c.cardPassword)
+        cardExpire.setText(c.cardExpire); cardValidation.setText(c.cardValidation)
         rememberStation(c.dep); rememberStation(c.arr)
         updateRailwayCapabilities()
         updateRoutePreview()
@@ -1122,6 +1184,13 @@ class MainActivity : ComponentActivity() {
         val departureCode = stationCode(departure)
         val arrivalCode = stationCode(arrival)
         val passengerCount = passengers.text.toString().toIntOrNull()
+        val autoPayEnabled = autoPay.isChecked
+        val maxFare = maxFareWon.text.toString().toIntOrNull() ?: 0
+        val savedAccount = store.accounts().firstOrNull { it.id == selectedAccountId }
+        val cardNo = if (autoPayEnabled) cardNumber.text.toString() else savedAccount?.cardNumber.orEmpty()
+        val cardPw = if (autoPayEnabled) cardPassword.text.toString() else savedAccount?.cardPassword.orEmpty()
+        val cardExpiry = if (autoPayEnabled) cardExpire.text.toString() else savedAccount?.cardExpire.orEmpty()
+        val cardCheck = if (autoPayEnabled) cardValidation.text.toString() else savedAccount?.cardValidation.orEmpty()
 
         require(name.length <= 40) { "프로필 이름은 40자 이내로 입력해" }
         require(railway.text.toString().trim() in railwayOptions) { "KORAIL+를 선택해" }
@@ -1132,13 +1201,20 @@ class MainActivity : ComponentActivity() {
         require(fromValue.matches(Regex("[0-9]{6}")) && toValue.matches(Regex("[0-9]{6}"))) { "조회 시간을 선택해" }
         require(fromValue <= toValue) { "종료 시각은 시작 시각 이후여야 해" }
         require(passengerCount != null && passengerCount > 0) { "성인 인원은 1명 이상 입력해" }
+        if (autoPayEnabled) {
+            require(maxFare > 0) { "최대 결제금액을 입력해" }
+            require(cardNo.matches(Regex("[0-9]{14,19}"))) { "카드번호는 숫자 14~19자리로 입력해" }
+            require(cardPw.matches(Regex("[0-9]{2}"))) { "카드 비밀번호 앞 2자리를 입력해" }
+            require(cardExpiry.matches(Regex("[0-9]{4}")) && cardExpiry.takeLast(2).toInt() in 1..12) { "유효기간을 YYMM으로 입력해" }
+            require(cardCheck.matches(Regex("[0-9]{6}|[0-9]{10}"))) { "생년월일 6자리 또는 사업자번호 10자리를 입력해" }
+        }
 
         return MonitorConfig(
             id, password, departure, arrival, dateValue, fromValue, toValue,
             passengerCount, special.isChecked, false, 30, 60,
-            false, "", "", "", "", operator = operatorValue,
+            autoPayEnabled, cardNo, cardPw, cardExpiry, cardCheck, operator = operatorValue,
             depCode = departureCode, arrCode = arrivalCode, monitorId = editingMonitorId,
-            accountId = selectedAccountId, migratedFromId = migratingFromId
+            accountId = selectedAccountId, migratedFromId = migratingFromId, maxFareWon = maxFare
         )
     }
 

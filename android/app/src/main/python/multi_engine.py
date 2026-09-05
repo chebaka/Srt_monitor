@@ -1,4 +1,4 @@
-"""Read-only shared-account multi-monitor scheduler."""
+"""Shared-account monitor with a guarded one-shot reservation/payment path."""
 
 import json
 import random
@@ -19,6 +19,8 @@ _TERMINAL_CODES = frozenset({
     "ERROR",
     "LEGACY_DISABLED",
     "SEAT_FOUND",
+    "PAID",
+    "UNCERTAIN",
     "STOPPED",
 })
 
@@ -40,7 +42,10 @@ def _is_stopped(monitor_id):
         return monitor_id in _stopped
 
 
-def _emit(callback, monitor_id, code, message, train_no=""):
+def _emit(
+    callback, monitor_id, code, message, train_no="", required=False,
+    pnr="", amount=0, attempt_id="",
+):
     payload = json.dumps({
         "monitorId": monitor_id,
         "statusCode": code,
@@ -48,11 +53,15 @@ def _emit(callback, monitor_id, code, message, train_no=""):
         "message": str(message)[:300],
         "trainNo": str(train_no),
         "deadline": "",
+        "pnr": str(pnr),
+        "amount": int(amount or 0),
+        "attemptId": str(attempt_id),
     }, ensure_ascii=False)
     try:
         callback.onStatus(payload)
     except Exception:
-        pass
+        if required:
+            raise
 
 
 def _finish(states, monitor_id, callback, code, message, train_no=""):
@@ -86,6 +95,34 @@ def _process_korail(client, state, states, callback):
     state["errors"] = 0
     if result_code == "SEAT_FOUND":
         train_no = str(candidate.train_no or "")
+        if config.get("autoPay"):
+            def mutation_status(code, message, **metadata):
+                try:
+                    _emit(
+                        callback, monitor_id, code, message, train_no,
+                        required=True, **metadata,
+                    )
+                except Exception as error:
+                    raise korail_engine.KorailPaymentBlockedError("상태 저장에 실패해 결제를 중단했어") from error
+            try:
+                amount = korail_engine._reserve_and_pay(
+                    client, candidate, config, mutation_status,
+                    lambda: _is_stopped(monitor_id),
+                )
+            except korail_engine.KorailMutationStoppedError as error:
+                _finish(states, monitor_id, callback, "STOPPED", _safe(error, config), train_no)
+                return
+            except korail_engine.KorailMutationUncertainError as error:
+                _finish(states, monitor_id, callback, "UNCERTAIN", _safe(error, config), train_no)
+                return
+            except korail_engine.KorailPaymentBlockedError as error:
+                _finish(states, monitor_id, callback, "ERROR", _safe(error, config), train_no)
+                return
+            _finish(
+                states, monitor_id, callback, "PAID",
+                f"자동 예약·결제 완료 · {amount:,}원", train_no,
+            )
+            return
         _finish(
             states,
             monitor_id,
@@ -175,6 +212,9 @@ def run_account_json(configs_json, callback):
             "ERROR",
             "한 작업에 서로 다른 KORAIL+ 계정을 사용할 수 없어",
         )
+        return
+    if sum(bool(state["config"].get("autoPay")) for state in states.values()) > 1:
+        _finish_all(states, callback, "ERROR", "계정당 자동결제 감시는 하나만 실행할 수 있어")
         return
 
     client = None
