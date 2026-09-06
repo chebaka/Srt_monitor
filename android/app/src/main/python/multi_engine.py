@@ -44,7 +44,7 @@ def _is_stopped(monitor_id):
 
 def _emit(
     callback, monitor_id, code, message, train_no="", required=False,
-    pnr="", amount=0, attempt_id="",
+    pnr="", amount=0, attempt_id="", trip=None,
 ):
     payload = json.dumps({
         "monitorId": monitor_id,
@@ -56,6 +56,7 @@ def _emit(
         "pnr": str(pnr),
         "amount": int(amount or 0),
         "attemptId": str(attempt_id),
+        "trip": trip if isinstance(trip, dict) else {},
     }, ensure_ascii=False)
     try:
         callback.onStatus(payload)
@@ -64,9 +65,34 @@ def _emit(
             raise
 
 
-def _finish(states, monitor_id, callback, code, message, train_no=""):
-    _emit(callback, monitor_id, code, message, train_no)
+def _finish(
+    states, monitor_id, callback, code, message, train_no="", metadata=None,
+    required=False,
+):
+    metadata = dict(metadata or states.get(monitor_id, {}).get("receipt", {}))
+    if "attemptId" in metadata:
+        metadata["attempt_id"] = metadata.pop("attemptId")
+    required = required or code == "PAID"
+    try:
+        _emit(
+            callback, monitor_id, code, message, train_no,
+            required=required, **metadata,
+        )
+    except Exception:
+        if code == "PAID" and required:
+            states.pop(monitor_id, None)
+            try:
+                _emit(
+                    callback, monitor_id, "UNCERTAIN",
+                    "결제 완료 상태 저장에 실패해 결과 확인이 필요해",
+                    train_no, required=True, **metadata,
+                )
+            except Exception:
+                pass
+            return False
+        raise
     states.pop(monitor_id, None)
+    return True
 
 
 def _finish_all(states, callback, code, message):
@@ -105,10 +131,12 @@ def _process_korail(client, state, states, callback):
                 except Exception as error:
                     raise korail_engine.KorailPaymentBlockedError("상태 저장에 실패해 결제를 중단했어") from error
             try:
-                amount = korail_engine._reserve_and_pay(
+                receipt = korail_engine._reserve_and_pay(
                     client, candidate, config, mutation_status,
                     lambda: _is_stopped(monitor_id),
                 )
+                state["receipt"] = receipt
+                amount = receipt["amount"]
             except korail_engine.KorailMutationStoppedError as error:
                 _finish(states, monitor_id, callback, "STOPPED", _safe(error, config), train_no)
                 return

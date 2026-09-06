@@ -242,10 +242,13 @@ class KorailRecoveryTest(unittest.TestCase):
             cancel_unpaid_hold=unittest.mock.Mock(),
         )
         events = []
-        amount = korail_engine._reserve_and_pay(
+        receipt = korail_engine._reserve_and_pay(
             client, candidate, config(autoPay=True), lambda code, message, **_: events.append(code)
         )
-        self.assertEqual(50000, amount)
+        self.assertEqual(50000, receipt["amount"])
+        self.assertEqual("PNR1", receipt["pnr"])
+        self.assertTrue(receipt["attemptId"])
+        self.assertEqual("301", receipt["trip"]["trainNo"])
         self.assertEqual(["RESERVE_IN_FLIGHT", "HOLD_CREATED", "PAYMENT_IN_FLIGHT"], events)
         client.reserve.assert_called_once()
         client.pay_with_card.assert_called_once()
@@ -264,6 +267,61 @@ class KorailRecoveryTest(unittest.TestCase):
             )
         client.reserve.assert_not_called()
 
+    def test_single_journey_accepts_zero_padded_count(self):
+        for good in ("1", "01", "0001", " 1 "):
+            self.assertTrue(korail_engine._is_single_journey(good), good)
+        for bad in ("0", "2", "", "11", "01a", None):
+            self.assertFalse(korail_engine._is_single_journey(bad), repr(bad))
+
+    def test_pinned_train_no_skips_other_trains(self):
+        def pinned(code, number, departure_time="083000"):
+            item = train(code, departure_time)
+            item.train_no = number
+            return item
+
+        client = SimpleNamespace(
+            search_trains=lambda query, continuation=None: Result(
+                [pinned("11", "301"), pinned("11", "345")]
+            )
+        )
+        status, candidate = korail_engine._find_candidate(client, config(trainNo="345"))
+        self.assertEqual("SEAT_FOUND", status)
+        self.assertEqual("345", candidate.train_no)
+
+        status, candidate = korail_engine._find_candidate(client, config(trainNo="999"))
+        self.assertEqual(("NO_MATCHING_TRAIN", None), (status, candidate))
+
+    def test_high_speed_auto_opt_in_passes_class_guard(self):
+        candidate = train()
+        candidate.train_class_code = "0A"
+        candidate.train_no = "345"
+        candidate.departure_time = "083000"
+        duplicate = SimpleNamespace(
+            train_no="345", run_date="20260902", departure_time="083000",
+            departure_station="수서", arrival_station="부산", pnr_no="PNR9",
+        )
+        client = SimpleNamespace(
+            get_reservation_history=unittest.mock.Mock(
+                return_value=SimpleNamespace(trains=(duplicate,))
+            ),
+            reserve=unittest.mock.Mock(),
+        )
+        with self.assertRaisesRegex(korail_engine.KorailPaymentBlockedError, "이미 있어"):
+            korail_engine._reserve_and_pay(
+                client, candidate, config(autoPay=True, allowHighSpeedAuto=True),
+                lambda *_args, **_kwargs: None,
+            )
+        client.reserve.assert_not_called()
+
+    def test_train_pin_and_high_speed_flag_validated(self):
+        with self.assertRaisesRegex(ValueError, "열차번호"):
+            korail_engine._validate_config(config(trainNo="KTX"))
+        with self.assertRaisesRegex(ValueError, "자동결제 감시"):
+            korail_engine._validate_config(config(allowHighSpeedAuto=True))
+        checked = config(trainNo="345", autoPay=True, allowHighSpeedAuto=True)
+        korail_engine._validate_config(checked)
+        self.assertEqual("345", checked["trainNo"])
+
     def test_unverified_high_speed_train_never_enters_generic_reservation(self):
         candidate = train()
         candidate.train_class_code = "0A"
@@ -277,6 +335,132 @@ class KorailRecoveryTest(unittest.TestCase):
             )
         client.get_reservation_history.assert_not_called()
         client.reserve.assert_not_called()
+
+    def test_duplicate_requires_same_pnr_journey_unit(self):
+        value = config()
+        raw = {
+            "reservations": [
+                {
+                    "h_pnr_no": "P1",
+                    "header": {"h_run_dt": value["date"]},
+                    "journeys": [{
+                        "h_trn_no": "301", "h_dpt_tm": "083000",
+                        "h_dpt_rs_stn_nm": value["dep"],
+                        "h_arv_rs_stn_nm": value["arr"],
+                    }],
+                },
+                {
+                    "h_pnr_no": "P2",
+                    "header": {"h_run_dt": value["date"]},
+                    "journeys": [{
+                        "h_trn_no": "999", "h_dpt_tm": "083000",
+                        "h_dpt_rs_stn_nm": value["dep"],
+                        "h_arv_rs_stn_nm": "other",
+                    }],
+                },
+            ]
+        }
+        client = SimpleNamespace(
+            get_reservation_history=lambda: SimpleNamespace(trains=()),
+            get_ticket_list=lambda **_: SimpleNamespace(raw=raw),
+        )
+        self.assertTrue(korail_engine._has_duplicate(client, train(), value))
+
+        raw["reservations"][0]["journeys"][0]["h_arv_rs_stn_nm"] = "other"
+        raw["reservations"][1]["journeys"][0]["h_trn_no"] = "301"
+        self.assertFalse(korail_engine._has_duplicate(client, train(), value))
+
+    def test_duplicate_and_paid_matching_keep_direction_and_pnr_scope(self):
+        value = config()
+        journey = {
+            "h_trn_no": "301", "h_dpt_tm": "083000",
+            "h_dpt_rs_stn_nm": value["dep"], "h_arv_rs_stn_nm": value["arr"],
+        }
+        raw = {"reservations": [
+            {"h_pnr_no": "P1", "header": {"h_run_dt": "20990101"}, "journeys": [journey]},
+            {"h_pnr_no": "P2", "header": {"h_run_dt": value["date"]},
+             "journeys": [{**journey, "h_trn_no": "999"}]},
+        ]}
+        client = SimpleNamespace(
+            get_reservation_history=lambda: SimpleNamespace(trains=()),
+            get_ticket_list=lambda **_: SimpleNamespace(raw=raw),
+        )
+        self.assertFalse(korail_engine._has_duplicate(client, train(), value))
+        raw = {
+            **journey, "h_pnr_no": "P1", "h_run_dt": value["date"],
+            "h_dpt_rs_stn_nm": value["arr"], "h_arv_rs_stn_nm": value["dep"],
+            "tickets": [{"h_seat_no": "1A", "h_psrm_cl_cd": "1", "h_rcvd_amt": "50000"}],
+        }
+        self.assertFalse(korail_engine._has_duplicate(client, train(), value))
+        self.assertFalse(korail_engine._paid_ticket_matches(raw, "P1", train(), value, 50000))
+        raw = {"h_pnr_no": "P1", "header": {"h_run_dt": value["date"]}, "journeys": [journey]}
+        self.assertTrue(korail_engine._has_duplicate(client, train(), value))
+
+    def test_check_payment_json_is_read_only_and_bounded(self):
+        value = config(autoPay=True, trainNo="301")
+        candidate = train()
+        attempt = {
+            "pnr": "PNR1", "amount": 50000, "attemptId": "attempt-1",
+            "trip": korail_engine._trip_snapshot(candidate, value),
+        }
+        paid_record = {
+            "h_pnr_no": "PNR1", "h_trn_no": "301", "h_run_dt": value["date"],
+            "h_dpt_tm": "083000", "h_dpt_rs_stn_nm": value["dep"],
+            "h_arv_rs_stn_nm": value["arr"],
+            "tickets": [{"h_seat_no": "1A", "h_psrm_cl_cd": "1", "h_rcvd_amt": "50000"}],
+        }
+        client = SimpleNamespace(
+            get_ticket_list=unittest.mock.Mock(return_value=SimpleNamespace(raw=paid_record)),
+            close=unittest.mock.Mock(),
+            reserve=unittest.mock.Mock(), pay_with_card=unittest.mock.Mock(),
+            cancel_unpaid_hold=unittest.mock.Mock(),
+        )
+        with patch.object(korail_engine, "_login", return_value=client):
+            result = json.loads(korail_engine.check_payment_json(json.dumps(value), json.dumps(attempt)))
+        self.assertEqual("PAID", result["statusCode"])
+        client.get_ticket_list.assert_called_once_with(mode="1")
+        client.reserve.assert_not_called()
+        client.pay_with_card.assert_not_called()
+        client.cancel_unpaid_hold.assert_not_called()
+
+        client.get_ticket_list.reset_mock()
+        client.get_ticket_list.return_value = SimpleNamespace(raw={})
+        with patch.object(korail_engine, "_login", return_value=client):
+            result = json.loads(korail_engine.check_payment_json(json.dumps(value), json.dumps(attempt)))
+        self.assertEqual("UNCERTAIN", result["statusCode"])
+        self.assertEqual(3, client.get_ticket_list.call_count)
+
+    def test_check_payment_json_rejects_trip_mismatch_before_login(self):
+        value = config(autoPay=True, trainNo="301")
+        attempt = {
+            "pnr": "PNR1", "amount": 50000, "attemptId": "attempt-1",
+            "trip": korail_engine._trip_snapshot(train(), value),
+        }
+        attempt["trip"] = dict(attempt["trip"], arrCode="9999")
+        with patch.object(korail_engine, "_login") as login:
+            result = json.loads(korail_engine.check_payment_json(json.dumps(value), json.dumps(attempt)))
+        self.assertEqual("UNCERTAIN", result["statusCode"])
+        login.assert_not_called()
+
+    def test_paid_finish_failure_falls_back_to_uncertain(self):
+        events = []
+
+        class FailingPaidCallback:
+            def onStatus(self, raw):
+                event = json.loads(raw)
+                events.append(event)
+                if event["statusCode"] == "PAID":
+                    raise RuntimeError("status write failed")
+
+        states = {"m1": {"receipt": {
+            "pnr": "PNR1", "amount": 50000, "attemptId": "attempt-1", "trip": {},
+        }}}
+        multi_engine._finish(
+            states, "m1", FailingPaidCallback(), "PAID", "paid", "301"
+        )
+        self.assertEqual({}, states)
+        self.assertEqual(["PAID", "UNCERTAIN"], [event["statusCode"] for event in events])
+        self.assertEqual("PNR1", events[-1]["pnr"])
 
     def test_srt_dispatch_is_terminal(self):
         callback = Callback()

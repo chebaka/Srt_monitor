@@ -1,5 +1,6 @@
 """Fail-closed KORAIL+ search, reservation, and one-shot card payment."""
 
+import json
 import re
 import random
 import string
@@ -7,6 +8,7 @@ import threading
 import time
 import uuid
 from collections import deque
+from types import SimpleNamespace
 from urllib.parse import quote_plus
 
 from korail_mobile_api import (
@@ -218,6 +220,7 @@ def _find_candidate(client, config):
     continuation = None
     found_sold_out = False
     found_cabin_unavailable = False
+    wanted_train = str(config.get("trainNo") or "").strip()
 
     def unavailable_status():
         if found_sold_out:
@@ -240,6 +243,8 @@ def _find_candidate(client, config):
             if departure_time > config["timeTo"]:
                 return unavailable_status(), None
             if not config["timeFrom"] <= departure_time <= config["timeTo"]:
+                continue
+            if wanted_train and str(getattr(train, "train_no", "") or "").strip() != wanted_train:
                 continue
             raw_code = (
                 train.special_reservation_code
@@ -269,12 +274,8 @@ def _response_succeeded(response):
     return str(getattr(response, "str_result", "") or "").upper() == "SUCC"
 
 
-def _raw_contains_value(value, expected):
-    if isinstance(value, dict):
-        return any(_raw_contains_value(item, expected) for item in value.values())
-    if isinstance(value, (list, tuple)):
-        return any(_raw_contains_value(item, expected) for item in value)
-    return str(value or "").strip() == expected
+def _is_single_journey(count):
+    return re.fullmatch(r"0*1", str(count or "").strip()) is not None
 
 
 def _dicts(value):
@@ -287,18 +288,90 @@ def _dicts(value):
             yield from _dicts(item)
 
 
+_TRIP_FIELD_ALIASES = {
+    "train_no": ("h_trn_no", "train_no", "trainNo"),
+    "date": ("h_run_dt", "run_date", "runDate", "departure_date", "departureDate", "date"),
+    "departure_time": ("h_dpt_tm", "departure_time", "departureTime"),
+    "departure_station": ("h_dpt_rs_stn_nm", "departure_station", "departureStation", "dep"),
+    "arrival_station": ("h_arv_rs_stn_nm", "arrival_station", "arrivalStation", "arr"),
+}
+_JOURNEY_KEYS = frozenset(
+    key for field, aliases in _TRIP_FIELD_ALIASES.items() if field != "date" for key in aliases
+)
+
+
+def _raw_trip_fields(value):
+    if not isinstance(value, dict):
+        return {}
+    fields = {}
+    for field, aliases in _TRIP_FIELD_ALIASES.items():
+        for key in aliases:
+            if key in value and str(value[key] or "").strip():
+                fields[field] = str(value[key]).strip()
+                break
+    return fields
+
+
+def _raw_ticket_units(value, inherited_pnr="", inherited_fields=None):
+    inherited_fields = inherited_fields or {}
+    if isinstance(value, dict):
+        own_pnr = str(value.get("h_pnr_no") or value.get("pnr_no") or "").strip()
+        pnr = own_pnr or inherited_pnr
+        scoped_fields = {} if own_pnr and own_pnr != inherited_pnr else dict(inherited_fields)
+        header = value.get("header")
+        if pnr and isinstance(header, dict) and not _JOURNEY_KEYS.intersection(header):
+            header_pnr = str(header.get("h_pnr_no") or header.get("pnr_no") or pnr).strip()
+            if header_pnr == pnr:
+                scoped_fields.update(_raw_trip_fields(header))
+        fields = _raw_trip_fields(value)
+        if _JOURNEY_KEYS.intersection(value):
+            unit = dict(value)
+            for field, actual in scoped_fields.items():
+                if field not in fields:
+                    unit[_TRIP_FIELD_ALIASES[field][0]] = actual
+            if pnr:
+                yield pnr, unit
+            child_fields = scoped_fields
+        else:
+            child_fields = dict(scoped_fields)
+            child_fields.update(fields)
+        for child in value.values():
+            yield from _raw_ticket_units(child, pnr, child_fields)
+    elif isinstance(value, (list, tuple)):
+        for child in value:
+            yield from _raw_ticket_units(child, inherited_pnr, inherited_fields)
+
+
+def _raw_trip_matches(record, train, config):
+    expected = {
+        "train_no": str(train.train_no).strip(), "date": str(config["date"]).strip(),
+        "departure_time": str(train.departure_time).strip(),
+        "departure_station": str(config["dep"]).strip(),
+        "arrival_station": str(config["arr"]).strip(),
+    }
+    actual = _raw_trip_fields(record)
+    return all(actual.get(field) == value for field, value in expected.items())
+
+
+def _trip_snapshot(train, config):
+    return {
+        "trainNo": str(getattr(train, "train_no", "") or "").strip(),
+        "departureTime": str(getattr(train, "departure_time", "") or "").strip(),
+        "date": str(config["date"]),
+        "dep": str(config["dep"]),
+        "arr": str(config["arr"]),
+        "depCode": str(config["depCode"]),
+        "arrCode": str(config["arrCode"]),
+        "passengers": int(config["passengers"]),
+        "special": bool(config["special"]),
+        "maxFareWon": int(config.get("maxFareWon", 0) or 0),
+    }
+
+
 def _paid_ticket_matches(raw, pnr, train, config, amount):
-    records = [
-        item for item in _dicts(raw)
-        if str(item.get("h_pnr_no", "") or "").strip() == pnr
-    ]
     expected_room = "2" if config["special"] else "1"
-    for record in records:
-        required = (
-            str(train.train_no), config["date"], str(train.departure_time),
-            config["dep"], config["arr"],
-        )
-        if not all(_raw_contains_value(record, value) for value in required):
+    for record_pnr, record in _raw_ticket_units(raw):
+        if record_pnr != pnr or not _raw_trip_matches(record, train, config):
             continue
         seat_rows = [item for item in _dicts(record) if str(item.get("h_seat_no", "") or "").strip()]
         if len(seat_rows) != config["passengers"]:
@@ -330,11 +403,10 @@ def _has_duplicate(client, train, config):
         return True
     tickets = client.get_ticket_list(mode="1")
     raw = getattr(tickets, "raw", {})
-    values = (
-        str(train.train_no), config["date"], str(train.departure_time),
-        config["dep"], config["arr"],
+    return any(
+        _raw_trip_matches(record, train, config)
+        for _ticket_pnr, record in _raw_ticket_units(raw)
     )
-    return all(_raw_contains_value(raw, value) for value in values)
 
 
 def _cancel_hold(client, hold):
@@ -353,7 +425,7 @@ def _validate_hold(client, hold, train, config):
     pnr = str(getattr(hold, "pnr_no", "") or "").strip()
     if not _response_succeeded(hold) or not pnr:
         raise KorailMutationUncertainError("예약 응답에 확정 식별자가 없어")
-    if str(getattr(hold, "journey_count", "") or "") != "1":
+    if not _is_single_journey(getattr(hold, "journey_count", "")):
         raise KorailPaymentBlockedError("예약 구간 수가 승인 조건과 달라")
     journeys = tuple(getattr(hold, "journeys", ()) or ())
     if len(journeys) != 1:
@@ -414,14 +486,15 @@ def _validate_hold(client, hold, train, config):
 
 def _reserve_and_pay(client, train, config, emit, should_stop=lambda: False):
     attempt_id = uuid.uuid4().hex
+    trip = _trip_snapshot(train, config)
     train_class_code = str(getattr(train, "train_class_code", "00") or "")
-    if not train_class_code.isdecimal():
+    if not train_class_code.isdecimal() and not config.get("allowHighSpeedAuto"):
         raise KorailPaymentBlockedError(
             "이 KORAIL+ 고속열차의 최신 예약 형식을 아직 검증하지 않아 자동 결제를 시작하지 않았어"
         )
     if _has_duplicate(client, train, config):
         raise KorailPaymentBlockedError("같은 열차의 예약 또는 승차권이 이미 있어")
-    emit("RESERVE_IN_FLIGHT", "예약 요청 전송 중", attempt_id=attempt_id)
+    emit("RESERVE_IN_FLIGHT", "예약 요청 전송 중", attempt_id=attempt_id, trip=trip)
     try:
         hold = client.reserve(
             train,
@@ -433,13 +506,16 @@ def _reserve_and_pay(client, train, config, emit, should_stop=lambda: False):
         raise KorailMutationUncertainError("예약 결과가 불명확해") from error
     try:
         pnr = str(getattr(hold, "pnr_no", "") or "").strip()
-        emit("HOLD_CREATED", "미결제 예약 생성 · 조건 검증 중", pnr=pnr, attempt_id=attempt_id)
+        emit(
+            "HOLD_CREATED", "미결제 예약 생성 · 조건 검증 중",
+            pnr=pnr, attempt_id=attempt_id, trip=trip,
+        )
         amount = _validate_hold(client, hold, train, config)
         if should_stop():
             raise KorailMutationStoppedError("사용자가 중지해 미결제 예약을 취소했어")
         emit(
             "PAYMENT_IN_FLIGHT", f"카드 결제 1회 전송 중 · {amount:,}원",
-            pnr=pnr, amount=amount, attempt_id=attempt_id,
+            pnr=pnr, amount=amount, attempt_id=attempt_id, trip=trip,
         )
     except KorailMutationUncertainError:
         raise
@@ -476,7 +552,7 @@ def _reserve_and_pay(client, train, config, emit, should_stop=lambda: False):
         except Exception as error:
             raise KorailMutationUncertainError("결제 실패 응답의 실제 발권 여부가 불명확해") from error
         if charged:
-            return amount
+            return {"pnr": pnr, "amount": amount, "attemptId": attempt_id, "trip": trip}
         _cancel_hold(client, hold)
         raise KorailPaymentBlockedError("카드 결제가 승인되지 않았어")
     try:
@@ -488,7 +564,129 @@ def _reserve_and_pay(client, train, config, emit, should_stop=lambda: False):
         raise KorailMutationUncertainError("결제 후 승차권을 확인하지 못했어") from error
     if not verified:
         raise KorailMutationUncertainError("결제 후 승차권을 확인하지 못했어")
-    return amount
+    return {"pnr": pnr, "amount": amount, "attemptId": attempt_id, "trip": trip}
+
+
+def _payment_result(status, message, pnr="", amount=0, attempt_id="", trip=None):
+    return json.dumps({
+        "status": status,
+        "statusCode": status,
+        "terminal": True,
+        "message": str(message)[:300],
+        "pnr": str(pnr),
+        "amount": int(amount or 0),
+        "attemptId": str(attempt_id),
+        "trip": trip if isinstance(trip, dict) else {},
+    }, ensure_ascii=False)
+
+
+def _load_json_object(value):
+    if isinstance(value, str):
+        value = json.loads(value)
+    if not isinstance(value, dict):
+        raise ValueError("JSON object required")
+    return value
+
+
+def _validated_attempt(config, attempt):
+    trip = attempt.get("trip")
+    if not isinstance(trip, dict):
+        raise ValueError("attempt trip snapshot missing")
+    required = (
+        "trainNo", "departureTime", "date", "dep", "arr", "depCode", "arrCode",
+        "passengers", "special", "maxFareWon",
+    )
+    if any(key not in trip for key in required):
+        raise ValueError("attempt trip snapshot incomplete")
+    train = SimpleNamespace(
+        train_no=str(trip["trainNo"]), departure_time=str(trip["departureTime"]),
+    )
+    expected = _trip_snapshot(train, config)
+    for key in required:
+        if isinstance(expected[key], bool):
+            matches = trip[key] is expected[key]
+        elif isinstance(expected[key], int):
+            actual = trip[key]
+            if isinstance(actual, bool):
+                matches = False
+            elif isinstance(actual, int):
+                matches = actual == expected[key]
+            elif isinstance(actual, str) and re.fullmatch(r"[0-9]+", actual.strip()):
+                matches = int(actual) == expected[key]
+            else:
+                matches = False
+        else:
+            matches = str(trip[key]) == expected[key]
+        if not matches:
+            raise ValueError("attempt trip does not match config")
+    if (
+        not re.fullmatch(r"[0-9]{6}", str(trip["departureTime"]))
+        or not config["timeFrom"] <= str(trip["departureTime"]) <= config["timeTo"]
+    ):
+        raise ValueError("attempt departure time does not match config window")
+    pinned = str(config.get("trainNo") or "").strip()
+    if pinned and str(trip["trainNo"]) != pinned:
+        raise ValueError("attempt train does not match config")
+    pnr = str(attempt.get("pnr") or "").strip()
+    attempt_id = str(attempt.get("attemptId") or "").strip()
+    if not pnr or not attempt_id:
+        raise ValueError("attempt identity missing")
+    amount = attempt.get("amount")
+    if isinstance(amount, bool) or (
+        not isinstance(amount, int)
+        and not (isinstance(amount, str) and re.fullmatch(r"[0-9]+", amount.strip()))
+    ):
+        raise ValueError("attempt amount invalid")
+    try:
+        amount = int(amount)
+    except (TypeError, ValueError) as error:
+        raise ValueError("attempt amount invalid") from error
+    if amount <= 0 or amount > int(trip["maxFareWon"]):
+        raise ValueError("attempt amount outside approved limit")
+    return pnr, amount, attempt_id, trip, train
+
+
+def check_payment_json(config_json, attempt_json):
+    """Read-only ticket recheck; returns only PAID or UNCERTAIN JSON."""
+    client = None
+    try:
+        config = _load_json_object(config_json)
+        attempt = _load_json_object(attempt_json)
+        _validate_config(config)
+        if not config.get("autoPay"):
+            raise ValueError("payment check requires auto-pay config")
+        pnr, amount, attempt_id, trip, train = _validated_attempt(config, attempt)
+    except Exception:
+        return _payment_result("UNCERTAIN", "결제 확인 입력을 검증하지 못했어")
+    try:
+        client = _login(config)
+        last_error = None
+        for _ in range(3):
+            try:
+                tickets = client.get_ticket_list(mode="1")
+                if _paid_ticket_matches(
+                    getattr(tickets, "raw", {}), pnr, train, config, amount
+                ):
+                    return _payment_result(
+                        "PAID", "발권 목록에서 결제를 재확인했어",
+                        pnr, amount, attempt_id, trip,
+                    )
+            except Exception as error:
+                last_error = error
+        message = "발권 목록에서 결제를 확인하지 못했어"
+        if last_error is not None:
+            message = _safe_error(last_error, config)
+        return _payment_result("UNCERTAIN", message, pnr, amount, attempt_id, trip)
+    except Exception as error:
+        return _payment_result(
+            "UNCERTAIN", _safe_error(error, config), pnr, amount, attempt_id, trip
+        )
+    finally:
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                pass
 
 
 def _safe_error(error, config):
@@ -571,6 +769,12 @@ def _validate_config(config):
     config["passengers"] = passengers
     if config.get("windowSeat"):
         raise ValueError("KORAIL+ 창가 우선은 아직 지원하지 않아")
+    train_no = str(config.get("trainNo") or "").strip()
+    if train_no and not re.fullmatch(r"[0-9]{1,5}", train_no):
+        raise ValueError("열차번호 형식이 잘못됐어")
+    config["trainNo"] = train_no
+    if config.get("allowHighSpeedAuto") and not config.get("autoPay"):
+        raise ValueError("고속열차 자동 처리는 자동결제 감시에서만 켤 수 있어")
     if config.get("autoPay"):
         for key, pattern in (
             ("cardNumber", r"[0-9]{14,19}"),
