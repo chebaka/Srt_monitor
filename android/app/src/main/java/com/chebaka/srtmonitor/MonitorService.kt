@@ -24,6 +24,7 @@ class MonitorService : Service() {
     private val workers = ConcurrentHashMap<String, Future<*>>()
     private val workerMonitorIds = ConcurrentHashMap<String, Set<String>>()
     private val restarting = ConcurrentHashMap.newKeySet<String>()
+    private val paymentChecks = ConcurrentHashMap.newKeySet<String>()
     private val generations = ConcurrentHashMap<String, Long>()
     private val workerLock = Any()
     private lateinit var store: ProfileStore
@@ -67,8 +68,9 @@ class MonitorService : Service() {
         store.monitors().filter {
             it.active && store.lastStatus(it.id)?.first in setOf("PAID", "COMPLETED")
         }.forEach { store.setMonitorActive(it.id, false) }
+        val runningIds = synchronized(workerLock) { workerMonitorIds.values.flatten().toSet() }
         store.monitors().filter {
-            it.active && store.lastStatus(it.id)?.first in setOf(
+            it.active && it.id !in runningIds && store.lastStatus(it.id)?.first in setOf(
                 "RESERVE_IN_FLIGHT", "HOLD_CREATED", "PAYMENT_IN_FLIGHT"
             )
         }.forEach {
@@ -139,8 +141,7 @@ class MonitorService : Service() {
                     .callAttr("stop_monitors", JSONArray().put(id).toString())
             } catch (_: Exception) { }
         }
-        store.updateLastStatus(id, "STOPPED", "감시 중지")
-        broadcast(id, "STOPPED", "감시 중지")
+        recordStop(id)
     }
 
     private fun restartAccountWorker(monitorId: String) {
@@ -148,6 +149,7 @@ class MonitorService : Service() {
         val workerKey = store.workerKey(monitor) ?: return
         if (workers[workerKey]?.isDone != false || !Python.isStarted()) return
         val ids = workerMonitorIds[workerKey].orEmpty().toList()
+        if (ids.any { store.lastStatus(it)?.first in MUTATION_CODES }) return
         restarting.addAll(ids)
         try {
             Python.getInstance().getModule("multi_engine")
@@ -157,7 +159,9 @@ class MonitorService : Service() {
 
     private fun restartAllWorkers() {
         if (!Python.isStarted() || workers.values.none { !it.isDone }) return
-        val ids = workerMonitorIds.values.flatten()
+        val ids = workerMonitorIds.values.filter { group ->
+            group.none { store.lastStatus(it)?.first in MUTATION_CODES }
+        }.flatten()
         restarting.addAll(ids)
         try {
             Python.getInstance().getModule("multi_engine")
@@ -175,13 +179,51 @@ class MonitorService : Service() {
                     .callAttr("stop_monitors", JSONArray(ids).toString())
             } catch (_: Exception) { }
         }
-        ids.forEach { store.updateLastStatus(it, "STOPPED", "감시 중지"); broadcast(it, "STOPPED", "감시 중지") }
+        ids.forEach(::recordStop)
+    }
+
+    private fun recordStop(id: String) {
+        val previous = store.lastStatus(id)?.first
+        if (previous == "PAID") return
+        val code = if (previous in MUTATION_CODES) "UNCERTAIN" else "STOPPED"
+        val message = if (code == "UNCERTAIN") "감시 중지 · 예약·결제 결과 재확인 필요" else "감시 중지"
+        store.updateLastStatus(id, code, message)
+        broadcast(id, code, message)
     }
 
     private fun requestPaymentCheck(id: String) {
-        if (!Python.isStarted()) return
-        try { Python.getInstance().getModule("multi_engine").callAttr("request_payment_check", id) }
-        catch (_: Exception) { }
+        val config = store.configForId(id) ?: return
+        val attempt = store.lastStatusDetail(id) ?: return
+        if (store.monitors().any { it.id == id && it.active } ||
+            workerMonitorIds.values.any { id in it } ||
+            attempt.optString("code") != "UNCERTAIN" ||
+            attempt.optString("pnr").isBlank() || attempt.optString("attemptId").isBlank() ||
+            !paymentChecks.add(id)) return
+        val savedConfig = config.toJson()
+        executor.submit {
+            try {
+                synchronized(workerLock) {
+                    if (!Python.isStarted()) Python.start(AndroidPlatform(this))
+                }
+                val result = JSONObject(Python.getInstance().getModule("korail_engine")
+                    .callAttr("check_payment_json", runtimeConfig(config).toString(), attempt.toString()).toString())
+                if (store.lastStatusDetail(id)?.optString("attemptId") != attempt.optString("attemptId") ||
+                    store.configForId(id)?.toJson() != savedConfig || store.lastStatus(id)?.first != "UNCERTAIN") return@submit
+                val code = if (result.optString("statusCode") == "PAID") "PAID" else "UNCERTAIN"
+                val message = result.optString("message", "결제 결과 재확인 필요")
+                store.updateLastStatus(id, code, message, result.optString("pnr"), result.optInt("amount"),
+                    result.optString("attemptId"), result.optJSONObject("trip"))
+                broadcast(id, code, message)
+                getSystemService(NotificationManager::class.java).notify(resultNotificationId(id),
+                    resultNotification(id, message, code, result))
+            } catch (_: Exception) {
+                broadcast(id, "UNCERTAIN", "결제 내역 조회 실패 · 저장된 예약 정보 유지")
+            } finally {
+                paymentChecks.remove(id)
+                refreshSummary()
+                stopIfIdle()
+            }
+        }
     }
 
     private fun handleEvent(raw: String, accountId: String, generation: Long) {
@@ -200,6 +242,7 @@ class MonitorService : Service() {
         store.updateLastStatus(
             id, code, message,
             event.optString("pnr"), event.optInt("amount"), event.optString("attemptId"),
+            event.optJSONObject("trip"),
         )
         broadcast(id, code, message)
         if (terminal) store.setMonitorActive(id, false)
@@ -215,9 +258,11 @@ class MonitorService : Service() {
 
     private fun emitFailure(id: String, error: Exception) {
         val message = "감시 실행 실패: ${error::class.simpleName ?: "오류"}"
-        store.updateLastStatus(id, "ERROR", message)
+        if (store.lastStatus(id)?.first == "PAID") return
+        val code = if (store.lastStatus(id)?.first in MUTATION_CODES) "UNCERTAIN" else "ERROR"
+        store.updateLastStatus(id, code, message)
         store.setMonitorActive(id, false)
-        broadcast(id, "ERROR", message)
+        broadcast(id, code, message)
     }
 
     private fun publishStartError(id: String) {
@@ -260,7 +305,7 @@ class MonitorService : Service() {
             builder.addAction(R.drawable.ic_stat_srt, if (code == "PAYMENT_PENDING") "공식 결제" else "예약내역 확인", PendingIntent.getActivity(
                 this, requestCode(id, 1), webIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
         }
-        if (code == "PAYMENT_PENDING") {
+        if (code == "UNCERTAIN") {
             val verify = Intent(this, MonitorService::class.java).apply {
                 action = ACTION_VERIFY_KORAIL_PAYMENT
                 putExtra(EXTRA_MONITOR_ID, id)
@@ -276,7 +321,7 @@ class MonitorService : Service() {
     private fun resultNotificationId(id: String): Int = 10_000 + id.hashCode().ushr(1) % 500_000
 
     private fun stopIfIdle() {
-        if (::store.isInitialized && store.monitors().none { it.active } && workers.values.none { !it.isDone }) {
+        if (::store.isInitialized && store.monitors().none { it.active } && workers.values.none { !it.isDone } && paymentChecks.isEmpty()) {
             stopForeground(STOP_FOREGROUND_DETACH)
             stopSelf()
         }
@@ -309,6 +354,7 @@ class MonitorService : Service() {
         const val EXTRA_AUTO_PAY_ARM = "auto_pay_arm"
         const val CHANNEL_ID = "srt_monitor"
         const val NOTIFICATION_ID = 1001
+        private val MUTATION_CODES = setOf("RESERVE_IN_FLIGHT", "HOLD_CREATED", "PAYMENT_IN_FLIGHT", "UNCERTAIN")
         private val TERMINAL_CODES = setOf(
             "API_INCOMPATIBLE", "AUTH_REJECTED", "AUTH_REQUIRED", "AUTH_UNVERIFIED",
             "COMPLETED", "ERROR", "EXPIRED", "LEGACY_DISABLED", "PAID", "SEAT_FOUND",

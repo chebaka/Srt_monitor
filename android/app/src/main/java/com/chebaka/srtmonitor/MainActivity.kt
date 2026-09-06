@@ -62,6 +62,8 @@ class MainActivity : ComponentActivity() {
     private lateinit var windowSeat: CheckBox
     private lateinit var autoPay: MaterialSwitch
     private lateinit var maxFareWon: EditText
+    private lateinit var trainNo: EditText
+    private lateinit var highSpeedAuto: MaterialSwitch
     private lateinit var cardNumber: EditText
     private lateinit var cardPassword: EditText
     private lateinit var cardExpire: EditText
@@ -467,7 +469,6 @@ class MainActivity : ComponentActivity() {
         }
 
     private fun refreshStationOptions() {
-        val stations = stationNamesForRailway()
         stationAdapters.forEach { adapter ->
             adapter.clear()
             adapter.addAll(stationDropdownItems())
@@ -476,8 +477,6 @@ class MainActivity : ComponentActivity() {
         stationInputs.zip(favoriteButtons).forEach { (input, button) ->
             button.text = if (isFavoriteStation(input.text.toString().trim())) "★" else "☆"
         }
-        if (::dep.isInitialized && dep.text.toString() !in stations) dep.setText("")
-        if (::arr.isInitialized && arr.text.toString() !in stations) arr.setText("")
         if (::routeFromLabel.isInitialized) updateRoutePreview()
     }
 
@@ -602,6 +601,8 @@ class MainActivity : ComponentActivity() {
 
     private fun updateRoutePreview() {
         if (!::routeFromLabel.isInitialized) return
+        if (!::dep.isInitialized || !::arr.isInitialized) return
+        if (!::date.isInitialized || !::timeFrom.isInitialized || !::timeTo.isInitialized) return
         val departure = dep.text.toString().trim()
         val arrival = arr.text.toString().trim()
         routeFromLabel.text = departure.ifEmpty { "출발역" }
@@ -777,6 +778,19 @@ class MainActivity : ComponentActivity() {
             val validation = field("생년월일 YYMMDD / 사업자번호", password = true, number = true)
             cardValidation = validation.second
             addView(validation.first)
+            val pinned = field("열차번호 고정 (예: 345, 비우면 시간대 전체)", number = true)
+            trainNo = pinned.second
+            addView(pinned.first)
+            highSpeedAuto = MaterialSwitch(this@MainActivity).apply {
+                text = "고속열차(KTX-산천 등) 자동 처리 허용"
+                textSize = 15f
+                setTextColor(color(R.color.srt_on_surface))
+                isChecked = false
+            }
+            addView(highSpeedAuto)
+            addView(text("고속열차 예약 형식은 실기기 검증 전이야. 자동결제 감시에서만 켜져.", 12f, R.color.srt_secondary).apply {
+                setPadding(0, dp(3), 0, 0)
+            })
             store.accounts().firstOrNull { it.id == selectedAccountId }?.let { account ->
                 cardNumber.setText(account.cardNumber); cardPassword.setText(account.cardPassword)
                 cardExpire.setText(account.cardExpire); cardValidation.setText(account.cardValidation)
@@ -894,10 +908,21 @@ class MainActivity : ComponentActivity() {
                 else -> store.lastStatus(monitor.id)?.second ?: if (monitor.active) "시작 대기" else "중지됨"
             }
             val operatorLabel = if (monitor.legacyReadOnly) "통합 전 감시" else "KORAIL+"
+            val trainPin = if (monitor.trainNo.isNotBlank()) " · ${monitor.trainNo}편 고정" else ""
+            val hsMark = if (monitor.allowHighSpeedAuto) " · 고속자동" else ""
             val mode = if (monitor.autoPay) "자동결제 · 상한 ${monitor.maxFareWon}원" else "알림"
-            box.addView(text("$operatorLabel · $mode · ${monitor.dep} → ${monitor.arr} · ${monitor.date}\n$statusText", 12f, R.color.srt_secondary))
+            box.addView(text("$operatorLabel · $mode$trainPin$hsMark · ${monitor.dep} → ${monitor.arr} · ${monitor.date}\n$statusText", 12f, R.color.srt_secondary))
+            val receipt = store.lastStatusDetail(monitor.id)
+            if (receipt?.optString("code") == "PAID") {
+                box.addView(text("결제 ${receipt.optInt("amount")}원 · 예약번호 끝 ${receipt.optString("pnr").takeLast(4)}", 12f, R.color.srt_secondary))
+            }
+            if (!monitor.active && receipt?.optString("code") == "UNCERTAIN" && receipt.optString("pnr").isNotBlank()) {
+                box.addView(secondaryButton("결제 재확인") {
+                    sendServiceAction(MonitorService.ACTION_VERIFY_KORAIL_PAYMENT, monitor.id)
+                }.apply { contentDescription = "${monitor.name} 결제 재확인" })
+            }
             val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            val uncertain = store.lastStatus(monitor.id)?.first in setOf("RESERVE_IN_FLIGHT", "UNCERTAIN")
+            val uncertain = store.lastStatus(monitor.id)?.first in setOf("RESERVE_IN_FLIGHT", "HOLD_CREATED", "PAYMENT_IN_FLIGHT", "UNCERTAIN")
             val editLabel = when {
                 monitor.legacyReadOnly && monitors.any { it.migratedFromId == monitor.id } -> "전환 완료"
                 monitor.legacyReadOnly -> "KORAIL+로 복사"
@@ -917,10 +942,10 @@ class MainActivity : ComponentActivity() {
                         }.show()
                     !monitor.legacyReadOnly -> loadProfile(monitor.name)
                 }
-            }.apply { isEnabled = editLabel != "전환 완료" }, LinearLayout.LayoutParams(0, dp(42), 1f).apply { rightMargin = dp(4) })
+            }.apply { isEnabled = !monitor.active && editLabel != "전환 완료" }, LinearLayout.LayoutParams(0, dp(42), 1f).apply { rightMargin = dp(4) })
             actions.addView(secondaryButton("삭제") {
                 if (store.deleteMonitor(monitor.id)) refreshDashboard()
-                else AlertDialog.Builder(this@MainActivity).setMessage("활성 감시는 먼저 중지해").setPositiveButton("확인", null).show()
+                else AlertDialog.Builder(this@MainActivity).setMessage("활성 감시는 중지하고, 결과 불명 예약은 공식 내역을 먼저 확인해").setPositiveButton("확인", null).show()
             }, LinearLayout.LayoutParams(0, dp(42), 1f).apply { leftMargin = dp(4) })
             box.addView(actions)
             dashboard.addView(box)
@@ -940,7 +965,9 @@ class MainActivity : ComponentActivity() {
                 .setMessage(
                     "${monitor.date} ${monitor.timeFrom.take(4)}~${monitor.timeTo.take(4)}\n" +
                         "${monitor.dep} → ${monitor.arr} · 성인 ${monitor.passengers}명 · ${if (monitor.special) "특실" else "일반실"}\n" +
+                        (if (monitor.trainNo.isNotBlank()) "${monitor.trainNo}편 고정 · " else "") +
                         "최대 ${monitor.maxFareWon}원 · 카드 끝 ${account.cardNumber.takeLast(4)}\n\n" +
+                        (if (monitor.allowHighSpeedAuto) "고속열차 자동 처리 포함 · 실기기 검증 전 경로야.\n" else "") +
                         "좌석 발견 시 예약과 카드결제를 각각 1회 실행해. 자동 환불은 하지 않아."
                 )
                 .setNegativeButton("취소") { _, _ -> refreshDashboard() }
@@ -1006,7 +1033,7 @@ class MainActivity : ComponentActivity() {
         timeFrom.setText(source.timeFrom); timeTo.setText(source.timeTo)
         passengers.setText(source.passengers.toString()); special.isChecked = source.special
         windowSeat.isChecked = false; autoPay.isChecked = false
-        maxFareWon.setText("")
+        maxFareWon.setText(""); trainNo.setText(""); highSpeedAuto.isChecked = false
         updateRoutePreview()
         renderStatus("조건 복사 완료 · KORAIL+ 계정과 역을 확인해")
     }
@@ -1030,7 +1057,8 @@ class MainActivity : ComponentActivity() {
         activeAccounts().firstOrNull()?.let(::applyAccount) ?: selectNewAccount()
         dep.setText(""); arr.setText(""); date.setText(""); timeFrom.setText(""); timeTo.setText("")
         passengers.setText("1"); special.isChecked = false; windowSeat.isChecked = false; autoPay.isChecked = false
-        maxFareWon.setText(""); cardNumber.setText(""); cardPassword.setText("")
+        maxFareWon.setText(""); trainNo.setText(""); highSpeedAuto.isChecked = false
+        cardNumber.setText(""); cardPassword.setText("")
         cardExpire.setText(""); cardValidation.setText("")
         renderStatus("새 감시 입력 중")
     }
@@ -1157,6 +1185,7 @@ class MainActivity : ComponentActivity() {
         date.setText(c.date); timeFrom.setText(c.timeFrom); timeTo.setText(c.timeTo); passengers.setText(c.passengers.toString())
         special.isChecked = c.special; windowSeat.isChecked = false; autoPay.isChecked = c.autoPay
         maxFareWon.setText(if (c.maxFareWon > 0) c.maxFareWon.toString() else "")
+        trainNo.setText(c.trainNo); highSpeedAuto.isChecked = c.allowHighSpeedAuto
         cardNumber.setText(c.cardNumber); cardPassword.setText(c.cardPassword)
         cardExpire.setText(c.cardExpire); cardValidation.setText(c.cardValidation)
         rememberStation(c.dep); rememberStation(c.arr)
@@ -1186,6 +1215,8 @@ class MainActivity : ComponentActivity() {
         val passengerCount = passengers.text.toString().toIntOrNull()
         val autoPayEnabled = autoPay.isChecked
         val maxFare = maxFareWon.text.toString().toIntOrNull() ?: 0
+        val pinnedTrain = trainNo.text.toString().trim()
+        val highSpeedEnabled = highSpeedAuto.isChecked
         val savedAccount = store.accounts().firstOrNull { it.id == selectedAccountId }
         val cardNo = if (autoPayEnabled) cardNumber.text.toString() else savedAccount?.cardNumber.orEmpty()
         val cardPw = if (autoPayEnabled) cardPassword.text.toString() else savedAccount?.cardPassword.orEmpty()
@@ -1201,6 +1232,8 @@ class MainActivity : ComponentActivity() {
         require(fromValue.matches(Regex("[0-9]{6}")) && toValue.matches(Regex("[0-9]{6}"))) { "조회 시간을 선택해" }
         require(fromValue <= toValue) { "종료 시각은 시작 시각 이후여야 해" }
         require(passengerCount != null && passengerCount > 0) { "성인 인원은 1명 이상 입력해" }
+        require(pinnedTrain.isEmpty() || pinnedTrain.matches(Regex("[0-9]{1,5}"))) { "열차번호는 숫자 5자리 이내로 입력해" }
+        require(!highSpeedEnabled || autoPayEnabled) { "고속열차 자동 처리는 자동결제를 켤 때만 가능해" }
         if (autoPayEnabled) {
             require(maxFare > 0) { "최대 결제금액을 입력해" }
             require(cardNo.matches(Regex("[0-9]{14,19}"))) { "카드번호는 숫자 14~19자리로 입력해" }
@@ -1214,7 +1247,8 @@ class MainActivity : ComponentActivity() {
             passengerCount, special.isChecked, false, 30, 60,
             autoPayEnabled, cardNo, cardPw, cardExpiry, cardCheck, operator = operatorValue,
             depCode = departureCode, arrCode = arrivalCode, monitorId = editingMonitorId,
-            accountId = selectedAccountId, migratedFromId = migratingFromId, maxFareWon = maxFare
+            accountId = selectedAccountId, migratedFromId = migratingFromId, maxFareWon = maxFare,
+            trainNo = pinnedTrain, allowHighSpeedAuto = highSpeedEnabled,
         )
     }
 

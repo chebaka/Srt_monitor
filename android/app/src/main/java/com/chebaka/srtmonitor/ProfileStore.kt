@@ -51,6 +51,8 @@ data class MonitorDefinition(
     val legacyReadOnly: Boolean = false,
     val migratedFromId: String = "",
     val maxFareWon: Int = 0,
+    val trainNo: String = "",
+    val allowHighSpeedAuto: Boolean = false,
 )
 
 data class MonitorConfig(
@@ -78,6 +80,8 @@ data class MonitorConfig(
     val accountId: String = "",
     val migratedFromId: String = "",
     val maxFareWon: Int = 0,
+    val trainNo: String = "",
+    val allowHighSpeedAuto: Boolean = false,
 ) {
     fun toJson(): String = JSONObject().apply {
         put("srtId", srtId); put("srtPassword", srtPassword)
@@ -87,6 +91,8 @@ data class MonitorConfig(
         put("windowSeat", windowSeat); put("pollMin", pollMin); put("pollMax", pollMax)
         put("autoPay", autoPay)
         put("maxFareWon", maxFareWon)
+        put("trainNo", trainNo)
+        put("allowHighSpeedAuto", allowHighSpeedAuto)
         if (autoPay) {
             put("cardNumber", cardNumber); put("cardPassword", cardPassword)
             put("cardExpire", cardExpire); put("cardValidation", cardValidation)
@@ -106,10 +112,11 @@ class ProfileStore(context: Context) {
     init { synchronized(PROCESS_LOCK) {
         migrateProfiles()
         if (!processInitialized) {
+            pauseUncertainReservations()
             pauseUnarmedAutoPay()
+            pauseAfterReboot(context)
             processInitialized = true
         }
-        pauseUncertainReservations(); pauseAfterReboot(context)
     } }
 
     fun save(profileName: String, config: MonitorConfig): MonitorDefinition = synchronized(PROCESS_LOCK) {
@@ -117,6 +124,10 @@ class ProfileStore(context: Context) {
         val accounts = accounts().toMutableList()
         val monitors = monitors().toMutableList()
         val old = monitors.firstOrNull { it.id == config.monitorId }
+        require(old?.active != true) { "실행 중인 감시는 중지한 뒤 수정해" }
+        require(old == null || lastStatus(old.id)?.first !in UNCERTAIN_CODES) {
+            "예약·결제 결과를 확인한 뒤 조건을 수정해"
+        }
         old?.let { AUTO_PAY_ARMS.remove(it.id) }
         if (config.monitorId.isNotBlank() && old == null) throw IllegalArgumentException("편집할 감시를 찾지 못했어")
         if (old?.legacyReadOnly == true) throw IllegalArgumentException("기존 SRT 감시는 KORAIL+로 복사해")
@@ -169,7 +180,7 @@ class ProfileStore(context: Context) {
             config.date, config.timeFrom, config.timeTo, config.passengers, config.special,
             false, config.pollMin, config.pollMax, config.autoPay, config.depCode,
             config.arrCode, old?.active ?: false, false, old?.migratedFromId ?: config.migratedFromId,
-            config.maxFareWon,
+            config.maxFareWon, config.trainNo, config.allowHighSpeedAuto,
         )
         old?.let(monitors::remove)
         monitors.add(monitor)
@@ -212,7 +223,7 @@ class ProfileStore(context: Context) {
             monitor.windowSeat, monitor.pollMin, monitor.pollMax, monitor.autoPay,
             account.cardNumber, account.cardPassword, account.cardExpire, account.cardValidation,
             account.operator, monitor.depCode, monitor.arrCode, monitor.id, account.id, monitor.migratedFromId,
-            monitor.maxFareWon,
+            monitor.maxFareWon, monitor.trainNo, monitor.allowHighSpeedAuto,
         )
     }
 
@@ -269,6 +280,7 @@ class ProfileStore(context: Context) {
             if (monitors().any { it.id != monitor.id && it.accountId == monitor.accountId && it.active && it.autoPay })
                 return "이 계정의 다른 자동결제 감시가 실행 중이야"
         }
+        if (monitor.allowHighSpeedAuto && !monitor.autoPay) return "고속열차 자동 처리는 자동결제 감시에서만 켤 수 있어"
         return null
     }
 
@@ -276,6 +288,7 @@ class ProfileStore(context: Context) {
         ?.let { accountKey(it.operator, it.loginId) }
 
     fun clearReservationUncertainty(id: String): Boolean = synchronized(PROCESS_LOCK) {
+        if (monitors().any { it.id == id && it.active }) return@synchronized false
         if (lastStatus(id)?.first !in UNCERTAIN_CODES) return@synchronized false
         updateLastStatus(id, "STOPPED", "KORAIL+ 예약내역 확인 완료 · 중지됨")
         true
@@ -288,6 +301,7 @@ class ProfileStore(context: Context) {
     fun deleteMonitor(id: String): Boolean = synchronized(PROCESS_LOCK) {
         val all = monitors()
         if (all.firstOrNull { it.id == id }?.active == true) return@synchronized false
+        if (lastStatus(id)?.first in UNCERTAIN_CODES) return@synchronized false
         write(accounts(), all.filterNot { it.id == id })
         all.any { it.id == id }
     }
@@ -308,17 +322,21 @@ class ProfileStore(context: Context) {
     fun updateLastStatus(
         id: String, code: String, message: String,
         pnr: String = "", amount: Int = 0, attemptId: String = "",
+        trip: JSONObject? = null,
     ) = synchronized(PROCESS_LOCK) {
         val root = readObject(STATUS_KEY)
         val previous = root.optJSONObject(id)
         val item = JSONObject().put("code", code).put("message", message.take(300))
-        val keepMutation = code == "UNCERTAIN"
+        val keepMutation = (attemptId.isBlank() || attemptId == previous?.optString("attemptId")) &&
+            code in setOf("RESERVE_IN_FLIGHT", "HOLD_CREATED", "PAYMENT_IN_FLIGHT", "UNCERTAIN", "PAID")
         val finalPnr = pnr.ifBlank { if (keepMutation) previous?.optString("pnr").orEmpty() else "" }
         val finalAttempt = attemptId.ifBlank { if (keepMutation) previous?.optString("attemptId").orEmpty() else "" }
         val finalAmount = if (amount > 0) amount else if (keepMutation) previous?.optInt("amount") ?: 0 else 0
         if (finalPnr.isNotBlank()) item.put("pnr", finalPnr)
         if (finalAttempt.isNotBlank()) item.put("attemptId", finalAttempt)
         if (finalAmount > 0) item.put("amount", finalAmount)
+        val finalTrip = trip?.takeIf { it.length() > 0 } ?: if (keepMutation) previous?.optJSONObject("trip") else null
+        if (finalTrip != null) item.put("trip", JSONObject(finalTrip.toString()))
         root.put(id, item)
         writeEncrypted(STATUS_KEY, root.toString())
     }
@@ -326,6 +344,10 @@ class ProfileStore(context: Context) {
     fun lastStatus(id: String): Pair<String, String>? {
         val value = readObject(STATUS_KEY).optJSONObject(id) ?: return null
         return value.optString("code") to value.optString("message")
+    }
+
+    fun lastStatusDetail(id: String): JSONObject? = synchronized(PROCESS_LOCK) {
+        readObject(STATUS_KEY).optJSONObject(id)?.let { JSONObject(it.toString()) }
     }
 
     private fun write(accounts: List<RailAccount>, monitors: List<MonitorDefinition>) {
@@ -464,6 +486,7 @@ class ProfileStore(context: Context) {
         monitor.id, monitor.accountId, monitor.depCode, monitor.arrCode, monitor.date,
         monitor.timeFrom, monitor.timeTo, monitor.passengers, monitor.special,
         monitor.maxFareWon, account.cardNumber, account.cardExpire, account.cardValidation,
+        monitor.trainNo, monitor.allowHighSpeedAuto,
     ).joinToString("|")
 
     private fun readArray(key: String, keyAlias: String = alias): List<JSONObject> {
@@ -496,7 +519,7 @@ class ProfileStore(context: Context) {
         put("special", m.special); put("windowSeat", m.windowSeat); put("pollMin", m.pollMin); put("pollMax", m.pollMax)
         put("autoPay", m.autoPay); put("depCode", m.depCode); put("arrCode", m.arrCode); put("active", m.active)
         put("legacyReadOnly", m.legacyReadOnly); put("migratedFromId", m.migratedFromId)
-        put("maxFareWon", m.maxFareWon)
+        put("maxFareWon", m.maxFareWon); put("trainNo", m.trainNo); put("allowHighSpeedAuto", m.allowHighSpeedAuto)
     }
 
     private fun accountFromJson(o: JSONObject) = try {
@@ -511,7 +534,7 @@ class ProfileStore(context: Context) {
             o.getInt("passengers"), o.getBoolean("special"), o.getBoolean("windowSeat"), o.getInt("pollMin"),
             o.getInt("pollMax"), o.getBoolean("autoPay"), o.optString("depCode"), o.optString("arrCode"),
             o.optBoolean("active"), o.optBoolean("legacyReadOnly"), o.optString("migratedFromId"),
-            o.optInt("maxFareWon"))
+            o.optInt("maxFareWon"), o.optString("trainNo"), o.optBoolean("allowHighSpeedAuto"))
     } catch (_: Exception) { null }
 
     private fun key(keyAlias: String): SecretKey {
