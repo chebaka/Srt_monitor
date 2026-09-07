@@ -141,6 +141,18 @@ class MonitorFlowTest {
                 assertTrue("save result: $message", setupStore.monitors().any { it.name == testName })
             }
             onView(withText(containsString("345편 고정"))).perform(scrollTo()).check(matches(isDisplayed()))
+            onView(withText("모니터링 시작")).perform(scrollTo(), click())
+            val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
+            val approve = device.wait(Until.findObject(By.text("예약·결제 1회 승인")), 15_000)
+            if (approve == null) {
+                var statusText = "<unreadable>"
+                scenario.onActivity { activity ->
+                    val statusField = MainActivity::class.java.getDeclaredField("status").apply { isAccessible = true }
+                    statusText = (statusField.get(activity) as android.widget.TextView).text.toString()
+                }
+                assertTrue("approve dialog never appeared, status=$statusText", false)
+            }
+            device.wait(Until.findObject(By.text("취소")), 5_000)?.click()
             tapMonitor(testName)
             onView(withText("예약·결제 1회 승인")).inRoot(isDialog()).check(matches(isDisplayed()))
             onView(withText("취소")).inRoot(isDialog()).perform(click())

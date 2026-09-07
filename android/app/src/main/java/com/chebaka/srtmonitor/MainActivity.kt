@@ -1271,6 +1271,10 @@ class MainActivity : ComponentActivity() {
         catch (error: IllegalArgumentException) { renderStatus(error.message.orEmpty()); return }
         catch (error: SecureStoreException) { renderStatus(error.message.orEmpty()); return }
         editingMonitorId = saved.id
+        selectedAccountId = saved.accountId
+        store.accounts().firstOrNull { it.id == saved.accountId }?.let {
+            if (::accountInput.isInitialized) accountInput.setText(accountLabel(it), false)
+        }
         renderStatus("프로필을 암호화해 저장했어")
         refreshDashboard()
     }
@@ -1285,6 +1289,10 @@ class MainActivity : ComponentActivity() {
         catch (error: IllegalArgumentException) { renderStatus(error.message.orEmpty()); return }
         catch (error: SecureStoreException) { renderStatus(error.message.orEmpty()); return }
         editingMonitorId = monitor.id
+        selectedAccountId = monitor.accountId
+        store.accounts().firstOrNull { it.id == monitor.accountId }?.let {
+            if (::accountInput.isInitialized) accountInput.setText(accountLabel(it), false)
+        }
         confirmStart(monitor)
         renderStatus("로그인 확인 요청됨 · 서버 응답 대기")
     }
