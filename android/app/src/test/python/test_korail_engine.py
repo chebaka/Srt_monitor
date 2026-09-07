@@ -396,6 +396,28 @@ class KorailRecoveryTest(unittest.TestCase):
         raw = {"h_pnr_no": "P1", "header": {"h_run_dt": value["date"]}, "journeys": [journey]}
         self.assertTrue(korail_engine._has_duplicate(client, train(), value))
 
+    def test_paid_matching_ignores_foreign_pnr_and_trip_seats(self):
+        value = config()
+        own_seat = {"h_seat_no": "9B", "h_psrm_cl_cd": "1", "h_rcvd_amt": "50000"}
+        foreign_seat = {"h_seat_no": "1A", "h_psrm_cl_cd": "1", "h_rcvd_amt": "50000"}
+        base = {
+            "h_pnr_no": "P1", "h_trn_no": "301", "h_run_dt": value["date"],
+            "h_dpt_tm": "083000", "h_dpt_rs_stn_nm": value["dep"],
+            "h_arv_rs_stn_nm": value["arr"],
+        }
+        # Foreign PNR nested inside our record must not count as paid.
+        raw = dict(base, nested={"h_pnr_no": "P2", "tickets": [foreign_seat]})
+        self.assertFalse(korail_engine._paid_ticket_matches(raw, "P1", train(), value, 50000))
+        # Same PNR but a different trip nested inside must not count either.
+        raw = dict(base, nested={
+            "h_pnr_no": "P1", "h_trn_no": "999", "h_dpt_tm": "083000",
+            "tickets": [foreign_seat],
+        })
+        self.assertFalse(korail_engine._paid_ticket_matches(raw, "P1", train(), value, 50000))
+        # Our own seats still confirm payment.
+        raw = dict(base, tickets=[own_seat])
+        self.assertTrue(korail_engine._paid_ticket_matches(raw, "P1", train(), value, 50000))
+
     def test_check_payment_json_is_read_only_and_bounded(self):
         value = config(autoPay=True, trainNo="301")
         candidate = train()

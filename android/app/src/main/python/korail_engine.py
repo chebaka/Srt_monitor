@@ -353,6 +353,45 @@ def _raw_trip_matches(record, train, config):
     return all(actual.get(field) == value for field, value in expected.items())
 
 
+def _scoped_seat_rows(record, pnr, train, config):
+    """Seat rows that belong to this PNR and do not contradict this trip.
+
+    A matching journey unit can nest foreign content (another PNR's seats
+    or a different trip's journey). Counting those as ours would confirm a
+    payment that never happened, so any nested dict with a different PNR or
+    contradictory trip fields prunes its whole subtree.
+    """
+    expected = {
+        "train_no": str(train.train_no).strip(),
+        "date": str(config["date"]).strip(),
+        "departure_time": str(train.departure_time).strip(),
+        "departure_station": str(config["dep"]).strip(),
+        "arrival_station": str(config["arr"]).strip(),
+    }
+    rows = []
+
+    def visit(value, scope_pnr):
+        if isinstance(value, dict):
+            own = str(value.get("h_pnr_no") or value.get("pnr_no") or "").strip()
+            scope = own or scope_pnr
+            if scope != pnr:
+                return
+            if value is not record:
+                actual = _raw_trip_fields(value)
+                if any(field in actual and actual[field] != expected[field] for field in expected):
+                    return
+            if str(value.get("h_seat_no", "") or "").strip():
+                rows.append(value)
+            for child in value.values():
+                visit(child, scope)
+        elif isinstance(value, (list, tuple)):
+            for child in value:
+                visit(child, scope_pnr)
+
+    visit(record, pnr)
+    return rows
+
+
 def _trip_snapshot(train, config):
     return {
         "trainNo": str(getattr(train, "train_no", "") or "").strip(),
@@ -373,7 +412,7 @@ def _paid_ticket_matches(raw, pnr, train, config, amount):
     for record_pnr, record in _raw_ticket_units(raw):
         if record_pnr != pnr or not _raw_trip_matches(record, train, config):
             continue
-        seat_rows = [item for item in _dicts(record) if str(item.get("h_seat_no", "") or "").strip()]
+        seat_rows = _scoped_seat_rows(record, pnr, train, config)
         if len(seat_rows) != config["passengers"]:
             continue
         if any(str(item.get("h_psrm_cl_cd", "") or "") != expected_room for item in seat_rows):

@@ -256,11 +256,18 @@ class ProfileStore(context: Context) {
 
     fun setAllActive(active: Boolean): Int = synchronized(PROCESS_LOCK) {
         val all = monitors()
-        var enabled = 0
+        var enabled = all.count { it.active && it.autoPay }
+        // Never touch a live autoPay monitor here: deactivating it mid-payment
+        // would cancel its worker and lose the payment callback. AutoPay monitors
+        // are started/stopped individually through the arming flow.
         val changed = all.map { item ->
-            val canStart = active && !item.autoPay && enabled < MAX_ACTIVE && activationError(item) == null
-            if (canStart) enabled += 1
-            item.copy(active = canStart)
+            if (!active || item.autoPay) {
+                if (active) item else item.copy(active = false)
+            } else {
+                val canStart = enabled < MAX_ACTIVE && activationError(item) == null
+                if (canStart) enabled += 1
+                item.copy(active = canStart)
+            }
         }
         write(accounts(), changed)
         changed.count { it.active }
@@ -497,7 +504,11 @@ class ProfileStore(context: Context) {
 
     private fun readObject(key: String): JSONObject {
         val raw = prefs.getString(key, null) ?: return JSONObject()
-        return try { JSONObject(decrypt(raw, alias)) } catch (_: Exception) { JSONObject() }
+        try {
+            return JSONObject(decrypt(raw, alias))
+        } catch (_: Exception) {
+            throw SecureStoreException()
+        }
     }
 
     private fun writeEncrypted(key: String, value: String) {

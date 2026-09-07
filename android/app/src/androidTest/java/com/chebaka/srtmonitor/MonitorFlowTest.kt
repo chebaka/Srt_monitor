@@ -344,6 +344,43 @@ class MonitorFlowTest {
     }
 
     @Test
+    fun startAllPreservesLiveAutoPayAndRejectsCorruptStatus() {
+        val context = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().targetContext
+        val prefix = "profile-regression-${java.util.UUID.randomUUID()}-"
+        val isolated = object : android.content.ContextWrapper(context) {
+            override fun getSharedPreferences(name: String, mode: Int): android.content.SharedPreferences =
+                super.getSharedPreferences(prefix + name, mode)
+        }
+        try {
+            val store = ProfileStore(isolated)
+            val config = MonitorConfig(
+                srtId = "offline@example.invalid", srtPassword = "offline-only", dep = "수서", arr = "평택지제",
+                date = "20260921", timeFrom = "220000", timeTo = "235000", passengers = 1, special = false,
+                windowSeat = false, pollMin = 30, pollMax = 60, autoPay = true,
+                cardNumber = "4111111111111111", cardPassword = "12", cardExpire = "2912", cardValidation = "900101",
+                depCode = "0551", arrCode = "0553", maxFareWon = 10000,
+            )
+            val automatic = store.save("automatic", config)
+            assertTrue(store.setMonitorActive(automatic.id, true, store.armAutoPay(automatic.id)!!))
+            store.updateLastStatus(automatic.id, "PAYMENT_IN_FLIGHT", "offline", "TEST-PNR", 7700, "attempt")
+            repeat(ProfileStore.MAX_ACTIVE) { index ->
+                store.save("notify-$index", config.copy(autoPay = false, accountId = automatic.accountId))
+            }
+            assertEquals(ProfileStore.MAX_ACTIVE, store.setAllActive(true))
+            assertTrue(store.monitors().first { it.id == automatic.id }.active)
+            assertEquals("PAYMENT_IN_FLIGHT", store.lastStatus(automatic.id)?.first)
+            assertEquals("TEST-PNR", store.lastStatusDetail(automatic.id)?.optString("pnr"))
+            assertEquals(0, store.setAllActive(false))
+            assertEquals("PAYMENT_IN_FLIGHT", store.lastStatus(automatic.id)?.first)
+            assertTrue(isolated.getSharedPreferences("srt_secure_profile", android.content.Context.MODE_PRIVATE)
+                .edit().putString("monitor_status_v3", "invalid-ciphertext").commit())
+            assertTrue(runCatching { store.lastStatus(automatic.id) }.exceptionOrNull() is SecureStoreException)
+        } finally {
+            context.deleteSharedPreferences(prefix + "srt_secure_profile")
+        }
+    }
+
+    @Test
     fun receiptSurvivesRecheckFailureAndNewStoreButNotNewAttempt() {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
         val store = ProfileStore(context)
