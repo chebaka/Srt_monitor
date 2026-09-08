@@ -177,7 +177,7 @@ class MonitorFlowTest {
         val instrumentation = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation()
         org.junit.Assume.assumeTrue("Explicit live-payment approval required",
             androidx.test.platform.app.InstrumentationRegistry.getArguments()
-                .getString("livePaymentApproval") == "20260921-one-ticket")
+                .getString("livePaymentApproval") == "20260912-one-ticket")
         val context = instrumentation.targetContext
         var store: ProfileStore? = null
         var monitorId: String? = null
@@ -188,28 +188,28 @@ class MonitorFlowTest {
         }
         try {
             val inputFile = java.io.File(context.filesDir, "live-payment-input.json")
-            val started = java.io.File(context.filesDir, "live-payment-started-20260921")
+            val started = java.io.File(context.filesDir, "live-payment-started-20260912")
             check(!started.exists()) { "Prior live attempt must be reconciled first" }
             check(inputFile.isFile && inputFile.length() in 1..16384)
             val input = JSONObject(inputFile.readText(Charsets.UTF_8))
             val trainNo = input.getString("trainNo")
-            check(trainNo.matches(Regex("[0-9]{1,5}")) && trainNo.toInt() !in setOf(345, 633))
+            check(trainNo == "1020")
             val maxFare = input.getInt("maxFareWon")
             check(maxFare in 1..10000)
-            check(java.time.LocalDate.now(java.time.ZoneId.of("Asia/Seoul")) <= java.time.LocalDate.of(2026, 9, 21))
+            check(java.time.LocalDate.now(java.time.ZoneId.of("Asia/Seoul")) <= java.time.LocalDate.of(2026, 9, 12))
             val config = MonitorConfig(
                 srtId = input.getString("srtId"), srtPassword = input.getString("srtPassword"),
-                dep = "수서", arr = "평택지제", date = "20260921", timeFrom = "220000", timeTo = "235000",
+                dep = "평택", arr = "서울", date = "20260912", timeFrom = "210000", timeTo = "235959",
                 passengers = 1, special = false, windowSeat = false, pollMin = 30, pollMax = 30,
                 autoPay = true, cardNumber = input.getString("cardNumber"),
                 cardPassword = input.getString("cardPassword"), cardExpire = input.getString("cardExpire"),
-                cardValidation = input.getString("cardValidation"), depCode = "0551", arrCode = "0553",
+                cardValidation = input.getString("cardValidation"), depCode = "0004", arrCode = "0001",
                 maxFareWon = maxFare, trainNo = trainNo, allowHighSpeedAuto = true,
             )
             val liveStore = ProfileStore(context)
             store = liveStore
             check(liveStore.monitors().none { it.active })
-            val monitor = liveStore.save("실결제 검증 20260921", config)
+            val monitor = liveStore.save("실결제 검증 20260912", config)
             monitorId = monitor.id
             check(liveStore.activationError(monitor) == null)
             check(inputFile.delete()) { "Private plaintext input cleanup failed" }
