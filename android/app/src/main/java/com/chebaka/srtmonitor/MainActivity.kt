@@ -768,6 +768,14 @@ class MainActivity : ComponentActivity() {
             addView(maxFare.first)
             val number = field("카드번호 (숫자만)", password = true, number = true)
             cardNumber = number.second
+            cardNumber.addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
+                override fun afterTextChanged(s: Editable?) {
+                    number.first.helperText = if (s != null && s.length >= 14)
+                        "카드 •••• ${s.takeLast(4)} · 프로필 저장 시 암호화 저장" else "프로필 저장 시 카드정보도 암호화 저장"
+                }
+            })
             addView(number.first)
             val cardPw = field("카드 비밀번호 앞 2자리", password = true, number = true)
             cardPassword = cardPw.second
@@ -1058,13 +1066,12 @@ class MainActivity : ComponentActivity() {
         dep.setText(""); arr.setText(""); date.setText(""); timeFrom.setText(""); timeTo.setText("")
         passengers.setText("1"); special.isChecked = false; windowSeat.isChecked = false; autoPay.isChecked = false
         maxFareWon.setText(""); trainNo.setText(""); highSpeedAuto.isChecked = false
-        cardNumber.setText(""); cardPassword.setText("")
-        cardExpire.setText(""); cardValidation.setText("")
         renderStatus("새 감시 입력 중")
     }
 
     private fun accountLabel(account: RailAccount): String =
-        "${account.name} · KORAIL+ · ${account.loginId.takeLast(4)}"
+        "${account.name} · KORAIL+ · ${account.loginId.takeLast(4)}" +
+            if (account.cardNumber.length >= 14) " · 카드 •••• ${account.cardNumber.takeLast(4)}" else ""
 
     private fun activeAccounts(): List<RailAccount> = store.accounts().filter { it.operator == ProfileStore.KORAIL_OPERATOR }
 
@@ -1217,11 +1224,10 @@ class MainActivity : ComponentActivity() {
         val maxFare = maxFareWon.text.toString().toIntOrNull() ?: 0
         val pinnedTrain = trainNo.text.toString().trim()
         val highSpeedEnabled = highSpeedAuto.isChecked
-        val savedAccount = store.accounts().firstOrNull { it.id == selectedAccountId }
-        val cardNo = if (autoPayEnabled) cardNumber.text.toString() else savedAccount?.cardNumber.orEmpty()
-        val cardPw = if (autoPayEnabled) cardPassword.text.toString() else savedAccount?.cardPassword.orEmpty()
-        val cardExpiry = if (autoPayEnabled) cardExpire.text.toString() else savedAccount?.cardExpire.orEmpty()
-        val cardCheck = if (autoPayEnabled) cardValidation.text.toString() else savedAccount?.cardValidation.orEmpty()
+        val cardNo = cardNumber.text.toString()
+        val cardPw = cardPassword.text.toString()
+        val cardExpiry = cardExpire.text.toString()
+        val cardCheck = cardValidation.text.toString()
 
         require(name.length <= 40) { "프로필 이름은 40자 이내로 입력해" }
         require(railway.text.toString().trim() in railwayOptions) { "KORAIL+를 선택해" }
@@ -1236,6 +1242,8 @@ class MainActivity : ComponentActivity() {
         require(!highSpeedEnabled || autoPayEnabled) { "고속열차 자동 처리는 자동결제를 켤 때만 가능해" }
         if (autoPayEnabled) {
             require(maxFare > 0) { "최대 결제금액을 입력해" }
+        }
+        if (autoPayEnabled || listOf(cardNo, cardPw, cardExpiry, cardCheck).any { it.isNotEmpty() }) {
             require(cardNo.matches(Regex("[0-9]{14,19}"))) { "카드번호는 숫자 14~19자리로 입력해" }
             require(cardPw.matches(Regex("[0-9]{2}"))) { "카드 비밀번호 앞 2자리를 입력해" }
             require(cardExpiry.matches(Regex("[0-9]{4}")) && cardExpiry.takeLast(2).toInt() in 1..12) { "유효기간을 YYMM으로 입력해" }
