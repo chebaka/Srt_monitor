@@ -254,7 +254,7 @@ def _find_candidate(client, config):
             code = str(raw_code or "").strip()
             if code == SEAT_AVAILABLE:
                 return "SEAT_FOUND", train
-            if code == "13":
+            if code in {"12", "13"}:
                 found_sold_out = True
             elif code == "00":
                 found_cabin_unavailable = True

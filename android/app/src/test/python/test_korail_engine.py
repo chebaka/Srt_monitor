@@ -177,7 +177,11 @@ class KorailRecoveryTest(unittest.TestCase):
         self.assertEqual("SEAT_FOUND", status)
         self.assertEqual("301", candidate.train_no)
 
-        for unavailable, expected in (("00", "CABIN_UNAVAILABLE"), ("13", "SOLD_OUT")):
+        for unavailable, expected in (
+            ("00", "CABIN_UNAVAILABLE"),
+            ("12", "SOLD_OUT"),
+            ("13", "SOLD_OUT"),
+        ):
             client = SimpleNamespace(
                 search_trains=lambda query, continuation=None, code=unavailable: Result([train(code)])
             )
