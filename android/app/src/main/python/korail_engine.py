@@ -27,6 +27,8 @@ from korail_mobile_api import (
     KorailNoDirectTrainError,
     KorailNoResultsError,
     KorailProtocolError,
+    KorailReservationJobType,
+    KorailSeatAssignment,
     KorailSeatClass,
     MutationConsent,
     TrainSearchQuery,
@@ -253,6 +255,10 @@ def _find_candidate(client, config):
             )
             code = str(raw_code or "").strip()
             if code == SEAT_AVAILABLE:
+                if int(config["passengers"]) == 2 and not _adjacent_seat_assignments(
+                    client, train, config,
+                )[0]:
+                    continue
                 return "SEAT_FOUND", train
             if code in {"12", "13"}:
                 found_sold_out = True
@@ -392,8 +398,8 @@ def _scoped_seat_rows(record, pnr, train, config):
     return rows
 
 
-def _trip_snapshot(train, config):
-    return {
+def _trip_snapshot(train, config, selected_seats=()):
+    trip = {
         "trainNo": str(getattr(train, "train_no", "") or "").strip(),
         "departureTime": str(getattr(train, "departure_time", "") or "").strip(),
         "date": str(config["date"]),
@@ -405,6 +411,55 @@ def _trip_snapshot(train, config):
         "special": bool(config["special"]),
         "maxFareWon": int(config.get("maxFareWon", 0) or 0),
     }
+    if selected_seats:
+        trip["selectedSeats"] = [
+            {"carNo": str(car_no), "seatNo": str(seat_no)}
+            for car_no, seat_no in selected_seats
+        ]
+    return trip
+
+
+def _seat_key(car_no, seat_no):
+    car = str(car_no or "").strip()
+    if car.isdigit():
+        car = str(int(car))
+    return car, str(seat_no or "").strip().upper()
+
+
+def _adjacent_seat_assignments(client, train, config):
+    if int(config["passengers"]) != 2:
+        return (), ()
+    room = "2" if config["special"] else "1"
+    cars = client.get_seat_cars(train, passenger_count=2, room_class_code=room)
+    for car in tuple(getattr(cars, "cars", ()) or ()):
+        car_no = getattr(car, "car_no", None)
+        if type(car_no) is not int:
+            continue
+        inventory = client.get_seat_inventory(
+            train, car_no, passenger_count=2, room_class_code=room,
+        )
+        available = {}
+        for seat in tuple(getattr(inventory, "seats", ()) or ()):
+            match = re.fullmatch(
+                r"([0-9]+)([A-D])",
+                str(getattr(seat, "specification", "") or "").strip().upper(),
+            )
+            if getattr(seat, "sale_possible", "") == "Y" and match:
+                available[(match.group(1), match.group(2), getattr(seat, "floor", None))] = seat
+        rows = sorted({key[0] for key in available}, key=int)
+        for row in rows:
+            floors = {key[2] for key in available if key[0] == row}
+            for letters in (("A", "B"), ("C", "D")):
+                for floor in floors:
+                    pair = tuple(available.get((row, letter, floor)) for letter in letters)
+                    if all(pair):
+                        assignments = tuple(
+                            KorailSeatAssignment.from_inventory(inventory, seat)
+                            for seat in pair
+                        )
+                        selected = tuple((car_no, seat.specification) for seat in pair)
+                        return assignments, selected
+    return (), ()
 
 
 def _paid_ticket_matches(raw, pnr, train, config, amount):
@@ -421,6 +476,12 @@ def _paid_ticket_matches(raw, pnr, train, config, amount):
         if not all(re.fullmatch(r"[0-9]+", value) for value in amounts):
             continue
         if sum(int(value) for value in amounts) != amount:
+            continue
+        selected = config.get("_selectedSeats") or ()
+        if selected and {
+            _seat_key(item.get("h_srcar_no"), item.get("h_seat_no"))
+            for item in seat_rows
+        } != {_seat_key(item["carNo"], item["seatNo"]) for item in selected}:
             continue
         return True
     return False
@@ -460,7 +521,7 @@ def _cancel_hold(client, hold):
         raise KorailMutationUncertainError("미결제 예약 취소 결과가 불명확해")
 
 
-def _validate_hold(client, hold, train, config):
+def _validate_hold(client, hold, train, config, selected_seats=()):
     pnr = str(getattr(hold, "pnr_no", "") or "").strip()
     if not _response_succeeded(hold) or not pnr:
         raise KorailMutationUncertainError("예약 응답에 확정 식별자가 없어")
@@ -510,6 +571,11 @@ def _validate_hold(client, hold, train, config):
         for seat in seats
     ):
         raise KorailPaymentBlockedError("예약 상세의 인원 또는 객실이 승인 조건과 달라")
+    if selected_seats and {
+        _seat_key(getattr(seat, "car_no", ""), getattr(seat, "seat_no", ""))
+        for seat in seats
+    } != {_seat_key(*item) for item in selected_seats}:
+        raise KorailPaymentBlockedError("붙은자리 지정 결과가 요청과 달라")
     seat_amounts = [str(getattr(seat, "received_amount", "") or "") for seat in seats]
     if not all(re.fullmatch(r"[0-9]+", value) for value in seat_amounts) or sum(map(int, seat_amounts)) != amount:
         raise KorailPaymentBlockedError("예약 상세의 좌석 금액 합계가 달라")
@@ -525,7 +591,15 @@ def _validate_hold(client, hold, train, config):
 
 def _reserve_and_pay(client, train, config, emit, should_stop=lambda: False):
     attempt_id = uuid.uuid4().hex
-    trip = _trip_snapshot(train, config)
+    assignments, selected_seats = _adjacent_seat_assignments(client, train, config)
+    if int(config["passengers"]) == 2 and not assignments:
+        raise KorailPaymentBlockedError("붙은자리 2석이 없어")
+    trip = _trip_snapshot(train, config, selected_seats)
+    match_config = dict(config, _selectedSeats=trip.get("selectedSeats", ()))
+    job_type = (
+        KorailReservationJobType.SEAT_DESIGNATED
+        if assignments else KorailReservationJobType.IMMEDIATE
+    )
     train_class_code = str(getattr(train, "train_class_code", "00") or "")
     if not train_class_code.isdecimal() and not config.get("allowHighSpeedAuto"):
         raise KorailPaymentBlockedError(
@@ -539,6 +613,8 @@ def _reserve_and_pay(client, train, config, emit, should_stop=lambda: False):
             train,
             passengers=KorailPassengerCounts(adult=config["passengers"]),
             seat_class=KorailSeatClass.SPECIAL if config["special"] else KorailSeatClass.GENERAL,
+            job_type=job_type,
+            seats=assignments or None,
             consent=MutationConsent(allow_reserve=True, dry_run=False),
         )
     except Exception as error:
@@ -549,7 +625,7 @@ def _reserve_and_pay(client, train, config, emit, should_stop=lambda: False):
             "HOLD_CREATED", "미결제 예약 생성 · 조건 검증 중",
             pnr=pnr, attempt_id=attempt_id, trip=trip,
         )
-        amount = _validate_hold(client, hold, train, config)
+        amount = _validate_hold(client, hold, train, config, selected_seats)
         if should_stop():
             raise KorailMutationStoppedError("사용자가 중지해 미결제 예약을 취소했어")
         emit(
@@ -586,7 +662,7 @@ def _reserve_and_pay(client, train, config, emit, should_stop=lambda: False):
         try:
             tickets = client.get_ticket_list(mode="1")
             charged = _paid_ticket_matches(
-                getattr(tickets, "raw", {}), pnr, train, config, amount
+                getattr(tickets, "raw", {}), pnr, train, match_config, amount
             )
         except Exception as error:
             raise KorailMutationUncertainError("결제 실패 응답의 실제 발권 여부가 불명확해") from error
@@ -597,7 +673,7 @@ def _reserve_and_pay(client, train, config, emit, should_stop=lambda: False):
     try:
         tickets = client.get_ticket_list(mode="1")
         verified = _paid_ticket_matches(
-            getattr(tickets, "raw", {}), pnr, train, config, amount
+            getattr(tickets, "raw", {}), pnr, train, match_config, amount
         )
     except Exception as error:
         raise KorailMutationUncertainError("결제 후 승차권을 확인하지 못했어") from error
@@ -682,6 +758,17 @@ def _validated_attempt(config, attempt):
         raise ValueError("attempt amount invalid") from error
     if amount <= 0 or amount > int(trip["maxFareWon"]):
         raise ValueError("attempt amount outside approved limit")
+    selected = trip.get("selectedSeats") or ()
+    if selected:
+        if not isinstance(selected, list) or len(selected) != 2 or any(
+            not isinstance(item, dict)
+            or set(item) != {"carNo", "seatNo"}
+            or not str(item["carNo"]).strip()
+            or not str(item["seatNo"]).strip()
+            for item in selected
+        ):
+            raise ValueError("attempt selected seats invalid")
+        config["_selectedSeats"] = selected
     return pnr, amount, attempt_id, trip, train
 
 

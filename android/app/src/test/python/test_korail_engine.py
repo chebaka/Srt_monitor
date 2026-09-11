@@ -22,6 +22,12 @@ class _KorailError(Exception):
     pass
 
 
+class _SeatAssignment:
+    @classmethod
+    def from_inventory(cls, inventory, seat):
+        return SimpleNamespace(car_no=inventory.car_no, seat_no=seat.seat_no)
+
+
 api = types.ModuleType("korail_mobile_api")
 for name in (
     "KorailAppUpdateRequiredError",
@@ -48,6 +54,8 @@ for name in (
 ):
     setattr(api, name, _Value)
 api.KorailSeatClass = SimpleNamespace(GENERAL="1", SPECIAL="2")
+api.KorailReservationJobType = SimpleNamespace(IMMEDIATE="1101", SEAT_DESIGNATED="1103")
+api.KorailSeatAssignment = _SeatAssignment
 constants = types.ModuleType("korail_mobile_api.constants")
 constants.build_dalvik_user_agent = lambda **kwargs: "test-agent"
 dynapath = types.ModuleType("korail_mobile_api.dynapath")
@@ -189,6 +197,48 @@ class KorailRecoveryTest(unittest.TestCase):
                 (expected, None),
                 korail_engine._find_candidate(client, config()),
             )
+
+    def test_adjacent_seats_use_same_row_side_and_floor(self):
+        seats = (
+            SimpleNamespace(seat_no="1", specification="7A", sale_possible="Y", floor="1"),
+            SimpleNamespace(seat_no="2", specification="7B", sale_possible="Y", floor="1"),
+            SimpleNamespace(seat_no="3", specification="7C", sale_possible="Y", floor="1"),
+            SimpleNamespace(seat_no="4", specification="8D", sale_possible="Y", floor="1"),
+        )
+        inventory = SimpleNamespace(car_no=3, seats=seats)
+        client = SimpleNamespace(
+            get_seat_cars=lambda *_args, **_kwargs: SimpleNamespace(
+                cars=(SimpleNamespace(car_no=3),)
+            ),
+            get_seat_inventory=lambda *_args, **_kwargs: inventory,
+        )
+        assignments, selected = korail_engine._adjacent_seat_assignments(
+            client, train(), config(passengers=2),
+        )
+        self.assertEqual(((3, "7A"), (3, "7B")), selected)
+        self.assertEqual(("1", "2"), tuple(item.seat_no for item in assignments))
+
+    def test_adjacent_seats_reject_aisle_and_unsellable_pairs(self):
+        seats = (
+            SimpleNamespace(seat_no="1", specification="7B", sale_possible="Y", floor="1"),
+            SimpleNamespace(seat_no="2", specification="7C", sale_possible="Y", floor="1"),
+            SimpleNamespace(seat_no="3", specification="8A", sale_possible="Y", floor="1"),
+            SimpleNamespace(seat_no="4", specification="8B", sale_possible="N", floor="1"),
+        )
+        client = SimpleNamespace(
+            get_seat_cars=lambda *_args, **_kwargs: SimpleNamespace(
+                cars=(SimpleNamespace(car_no=3),)
+            ),
+            get_seat_inventory=lambda *_args, **_kwargs: SimpleNamespace(
+                car_no=3, seats=seats,
+            ),
+        )
+        self.assertEqual(
+            ((), ()),
+            korail_engine._adjacent_seat_assignments(
+                client, train(), config(passengers=2),
+            ),
+        )
 
     def test_unknown_seat_code_fails_closed(self):
         client = SimpleNamespace(
